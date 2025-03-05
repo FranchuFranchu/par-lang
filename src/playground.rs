@@ -108,14 +108,15 @@ impl Compiled {
                 buf
             })
             .collect();
+
         // attempt to type check
         let mut new_program = Program::default();
-        for (name, expression) in &program.definitions {
-            let mut context = types::Context::new(
-                Arc::new(program.type_defs.clone()),
-                Arc::new(types::Declarations(program.declarations.clone())),
-            );
+        let mut context = types::Context::new(
+            Arc::new(program.type_defs.clone()),
+            types::Declarations(program.declarations.clone()),
+        );
 
+        for (name, expression) in &program.definitions {
             match program.declarations.get(name) {
                 Some(Some(declaration)) => {
                     new_program
@@ -139,7 +140,8 @@ impl Compiled {
                         new_program.definitions.insert(name.clone(), e);
                         new_program
                             .declarations
-                            .insert(name.clone(), Some(inferred_type));
+                            .insert(name.clone(), Some(inferred_type.clone()));
+                        context.add_declaration(name.clone(), inferred_type);
                     }
                     Err(error) => {
                         return Compiled {

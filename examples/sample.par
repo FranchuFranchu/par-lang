@@ -76,7 +76,18 @@ def flatten_process_syntax = chan caller {
   caller.empty!
 }
 
-def flatten = [tree] chan yield {
+type List<T> = recursive either {
+  .empty!
+  .item(T) self
+}
+
+type Tree<T> = recursive either {
+  .empty!
+  .node(self)(T)(self)!
+}
+
+dec flatten : [type T] [Tree<T>] List<T>
+def flatten = [type T] [tree] chan yield {
   let yield = tree begin {
     empty? => yield
 
