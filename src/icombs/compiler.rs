@@ -449,6 +449,14 @@ impl<'program, Name: Debug + Clone + Eq + Hash + Display + Ord> Compiler<'progra
                     let context_out = multiplex_trees(m_trees);
 
                     self.compile_process(process);
+                    // drop all replicables
+                    for (name, (value, kind)) in core::mem::take(&mut self.vars).into_iter() {
+                        if kind == VariableKind::Linear {
+                            panic!("some variables were not closed: {:?}", name);
+                        } else {
+                            self.net.link(value.tree, Tree::e());
+                        }
+                    }
                     branches.push((context_out, w1.tree))
                 }
                 let t = self.choice_instance(context_in, branches);
