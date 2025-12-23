@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fmt::Debug;
 use std::sync::OnceLock;
 
@@ -9,20 +9,119 @@ use crate::runtime::new::{
 
 use super::runtime::{Global, Package};
 
+struct ArenaSlots<T> {
+    inner: Vec<T>,
+    start: usize,
+    intern: HashMap<usize, T>,
+}
+
+impl<T> Default for ArenaSlots<T> {
+    fn default() -> Self {
+        Self {
+            inner: vec![],
+            start: 0,
+            intern: HashMap::new(),
+        }
+    }
+}
+impl<T> ArenaSlots<T> {
+    fn memory_usage(&self) -> usize {
+        size_of::<T>() * self.inner.len()
+    }
+    fn get_one(&self, index: usize) -> &T {
+        &self.inner[index - self.start]
+    }
+    fn get_slice(&self, index: usize, length: usize) -> &[T] {
+        &self.inner[index - self.start..index - self.start + length]
+    }
+    fn alloc_one(&mut self, data: T) -> usize {
+        let index = self.inner.len() + self.start;
+        self.inner.push(data);
+        index
+    }
+    fn alloc_slice(&mut self, data: &[T]) -> (usize, usize)
+    where
+        T: Clone,
+    {
+        let index = self.inner.len() + self.start;
+        let len = data.len();
+        self.inner.extend_from_slice(data);
+        (index, len)
+    }
+    fn end_index(&self) -> usize {
+        self.start + self.inner.len()
+    }
+    fn with_start(start: usize) -> Self {
+        Self {
+            start,
+            ..Default::default()
+        }
+    }
+    fn append(&mut self, other: &mut ArenaSlots<T>) {
+        assert!(other.start == self.end_index());
+        self.inner.append(&mut other.inner);
+        self.intern
+            .extend(core::mem::take(&mut other.intern).into_iter());
+    }
+    fn contains(&self, index: usize) -> bool {
+        (self.start..self.end_index()).contains(&index)
+    }
+    fn contains_range(&self, index: usize, len: usize) -> bool {
+        self.contains(index) && (len == 0 || self.contains(index + len - 1))
+    }
+}
+
 #[derive(Default)]
 /// The `Arena` is a store for values from a finite set of types,
 /// and returns indices into the arena. Allocation is done using [`Arena::alloc`],
 /// and values can be accessed later with [`Arena::get`]
 pub struct Arena {
-    nodes: Vec<Global>,
+    nodes: ArenaSlots<Global>,
+    packages: ArenaSlots<OnceLock<Package>>,
+    redexes: ArenaSlots<(Index<Global>, Index<Global>)>,
+    case_branches: ArenaSlots<(Index<str>, PackageBody)>,
+
+    strings_start: usize,
     strings: String,
-    packages: Vec<OnceLock<Package>>,
-    redexes: Vec<(Index<Global>, Index<Global>)>,
-    case_branches: Vec<(Index<str>, PackageBody)>,
-    string_to_location: BTreeMap<String, Index<str>>,
+    strings_intern: BTreeMap<String, Index<str>>,
 }
 
+type ArenaTrim = (usize, usize, usize, usize, usize);
+
 impl Arena {
+    fn slots_lengths(&self) -> ArenaTrim {
+        (
+            self.nodes.start,
+            self.packages.start,
+            self.redexes.start,
+            self.case_branches.start,
+            self.strings_start,
+        )
+    }
+    fn initialize_with_slot_start(
+        (nodes, packages, redexes, case_branches, strings): ArenaTrim,
+    ) -> Self {
+        Arena {
+            nodes: ArenaSlots::with_start(nodes),
+            packages: ArenaSlots::with_start(packages),
+            redexes: ArenaSlots::with_start(redexes),
+            case_branches: ArenaSlots::with_start(case_branches),
+            strings_start: strings,
+            ..Default::default()
+        }
+    }
+
+    fn append(&mut self, other: &mut Arena) {
+        self.nodes.append(&mut other.nodes);
+        self.packages.append(&mut other.packages);
+        self.redexes.append(&mut other.redexes);
+        self.case_branches.append(&mut other.case_branches);
+        // TODO append strings
+    }
+    fn postfix_arena(&self) -> Arena {
+        Self::initialize_with_slot_start(self.slots_lengths())
+    }
+
     /// Get a reference
     pub fn get<T: Indexable + ?Sized>(&self, index: Index<T>) -> &T {
         T::get(self, index)
@@ -33,12 +132,11 @@ impl Arena {
     pub fn alloc_clone<T: Indexable + ?Sized>(&mut self, data: &T) -> Index<T> {
         T::alloc_clone(self, data)
     }
+    pub fn contains<T: Indexable + ?Sized>(&self, index: Index<T>) -> bool {
+        T::contains(self, index)
+    }
     pub fn memory_size(&self) -> usize {
-        self.nodes.len() * size_of::<Global>()
-            + self.strings.len()
-            + self.packages.len() * size_of::<OnceLock<Package>>()
-            + self.redexes.len() * size_of::<(Global, Global)>()
-            + self.case_branches.len() * size_of::<(Index<str>, PackageBody)>()
+        0
     }
     pub fn empty_string(&self) -> Index<str> {
         Index((0, 0))
@@ -46,11 +144,11 @@ impl Arena {
     pub fn intern(&mut self, s: &str) -> Index<str> {
         if s.is_empty() {
             self.empty_string()
-        } else if let Some(s) = self.string_to_location.get(s) {
+        } else if let Some(s) = self.strings_intern.get(s) {
             s.clone()
         } else {
             let i = self.alloc_clone(s);
-            self.string_to_location.insert(s.to_string(), i.clone());
+            self.strings_intern.insert(s.to_string(), i.clone());
             i
         }
     }
@@ -58,7 +156,7 @@ impl Arena {
         if s.is_empty() {
             Some(self.empty_string())
         } else {
-            self.string_to_location.get(s).cloned()
+            self.strings_intern.get(s).cloned()
         }
     }
 }
@@ -66,7 +164,7 @@ impl Arena {
 impl std::fmt::Display for Arena {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let shower = Shower::from_arena(&self);
-        for (idx, package) in self.packages.iter().enumerate() {
+        for (idx, package) in self.packages.inner.iter().enumerate() {
             let Some(lock) = package.get() else {
                 write!(f, "@{} = <unfilled>\n", idx)?;
                 continue;
@@ -103,11 +201,12 @@ impl<T: Indexable + ?Sized> Copy for Index<T> {}
 pub trait Indexable {
     type Store: Copy + PartialEq + Eq + PartialOrd + Ord;
     fn get<'s>(store: &'s Arena, index: Index<Self>) -> &'s Self;
+    fn contains<'s>(store: &'s Arena, index: Index<Self>) -> bool;
     fn alloc<'s>(store: &'s mut Arena, data: Self) -> Index<Self>
     where
         Self: Sized;
-    fn alloc_clone<'s>(_store: &'s mut Arena, _data: &Self) -> Index<Self> {
-        todo!()
+    fn alloc_clone<'s>(_: &'s mut Arena, _: &Self) -> Index<Self> {
+        todo!() //Self::alloc(data.clone())
     }
 }
 
@@ -116,12 +215,13 @@ macro_rules! slice_indexable {
         impl Indexable for [$element] {
             type Store = (usize, usize);
             fn get<'s>(store: &'s Arena, index: Index<Self>) -> &'s Self {
-                &store.$field[index.0 .0..index.0 .0 + index.0 .1]
+                store.$field.get_slice(index.0 .0, index.0 .1)
             }
             fn alloc_clone<'s>(store: &'s mut Arena, data: &Self) -> Index<Self> {
-                let start = store.$field.len();
-                store.$field.extend_from_slice(data);
-                Index((start, data.len()))
+                Index(store.$field.alloc_slice(data))
+            }
+            fn contains<'s>(store: &'s Arena, index: Index<Self>) -> bool {
+                store.$field.contains_range(index.0 .0, index.0 .1)
             }
         }
         impl Iterator for Index<[$element]> {
@@ -144,12 +244,13 @@ macro_rules! sized_indexable {
         impl Indexable for $element {
             type Store = usize;
             fn get<'s>(store: &'s Arena, index: Index<Self>) -> &'s Self {
-                &store.$field[index.0]
+                &store.$field.get_one(index.0)
             }
             fn alloc<'s>(store: &'s mut Arena, data: Self) -> Index<Self> {
-                let start = store.$field.len();
-                store.$field.push(data);
-                Index(start)
+                Index(store.$field.alloc_one(data))
+            }
+            fn contains<'s>(store: &'s Arena, index: Index<Self>) -> bool {
+                store.$field.contains(index.0)
             }
         }
     };
@@ -165,12 +266,20 @@ sized_indexable!(nodes, Global);
 impl Indexable for str {
     type Store = (usize, usize);
     fn get<'s>(store: &'s Arena, index: Index<Self>) -> &'s Self {
-        &store.strings[index.0 .0..index.0 .0 + index.0 .1]
+        &store.strings
+            [index.0 .0 - store.strings_start..index.0 .0 + index.0 .1 - store.strings_start]
     }
     fn alloc_clone<'s>(store: &'s mut Arena, data: &Self) -> Index<Self> {
-        let start = store.strings.len();
+        let start = store.strings.len() + store.strings_start;
         store.strings.push_str(data);
         Index((start, data.len()))
+    }
+    fn contains<'s>(store: &'s Arena, index: Index<Self>) -> bool {
+        fn contains_inner<'s>(store: &'s Arena, index: usize) -> bool {
+            (store.strings_start..store.strings_start + store.strings.len()).contains(&index)
+        }
+        contains_inner(store, index.0 .0)
+            && (index.0 .1 == 0 || contains_inner(store, index.0 .0 + index.0 .1 - 1))
     }
 }
 
@@ -241,5 +350,55 @@ impl<'a> ArenaLike for &'a Arena {
     }
     fn empty_string(&self) -> Index<str> {
         Arena::empty_string(self)
+    }
+}
+
+pub struct TripleArena {
+    permanent: Arena,
+    read: Arena,
+    write: Arena,
+}
+
+impl TripleArena {
+    pub fn get<T: Indexable + ?Sized>(&self, index: Index<T>) -> &T {
+        if self.permanent.contains(index) {
+            self.permanent.get(index)
+        } else {
+            self.read.get(index)
+        }
+    }
+    pub fn alloc<T: Indexable>(&mut self, data: T) -> Index<T> {
+        T::alloc(&mut self.write, data)
+    }
+    pub fn alloc_clone<T: Indexable + ?Sized>(&mut self, data: &T) -> Index<T> {
+        T::alloc_clone(&mut self.write, data)
+    }
+    pub fn memory_size(&self) -> usize {
+        0
+    }
+    pub fn empty_string(&self) -> Index<str> {
+        self.permanent.empty_string()
+    }
+    pub fn intern(&mut self, s: &str) -> Index<str> {
+        self.permanent
+            .interned(s)
+            .or_else(|| self.read.interned(s))
+            .unwrap_or_else(|| self.write.intern(s))
+    }
+    pub fn interned(&self, s: &str) -> Option<Index<str>> {
+        self.permanent
+            .interned(s)
+            .or_else(|| self.read.interned(s))
+            .or_else(|| self.read.interned(s))
+    }
+    pub fn flush_to_temporary(&mut self) {
+        self.read.append(&mut self.write);
+    }
+    pub fn flush_to_permanent(&mut self) {
+        self.permanent.append(&mut self.write);
+    }
+    pub fn reset_buffers(&mut self) {
+        self.write = self.permanent.postfix_arena();
+        self.read = self.permanent.postfix_arena();
     }
 }
