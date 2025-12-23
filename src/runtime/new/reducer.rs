@@ -1,4 +1,5 @@
 use super::readback::Handle;
+use crate::runtime::new::arena::Arena;
 use crate::runtime::new::runtime::{Linear, Node, Runtime, UserData};
 use crate::runtime::new::stats::Rewrites;
 use crate::TokioSpawn;
@@ -40,14 +41,14 @@ impl Drop for NetHandle {
 }
 
 pub struct Reducer {
-    pub runtime: Runtime,
+    pub runtime: Runtime<Arc<Arena>>,
     spawner: Arc<dyn Spawn + Send + Sync>,
     inbox: mpsc::UnboundedReceiver<ReducerMessage>,
     handle: NetHandle,
 }
 
 impl Reducer {
-    pub fn from(runtime: Runtime) -> Self {
+    pub fn from(runtime: Runtime<Arc<Arena>>) -> Self {
         let (tx, rx) = mpsc::unbounded_channel();
         Self {
             runtime,

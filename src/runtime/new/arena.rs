@@ -65,7 +65,7 @@ impl Arena {
 
 impl std::fmt::Display for Arena {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let shower = Shower::from_arena(self);
+        let shower = Shower::from_arena(&self);
         for (idx, package) in self.packages.iter().enumerate() {
             let Some(lock) = package.get() else {
                 write!(f, "@{} = <unfilled>\n", idx)?;
@@ -218,5 +218,28 @@ where
 {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         self.0.cmp(&other.0)
+    }
+}
+
+pub trait ArenaLike: Clone {
+    fn get<T: Indexable + ?Sized>(&self, index: Index<T>) -> &T;
+    fn empty_string(&self) -> Index<str>;
+}
+
+use std::sync::Arc;
+impl ArenaLike for Arc<Arena> {
+    fn get<T: Indexable + ?Sized>(&self, index: Index<T>) -> &T {
+        Arena::get(self.as_ref(), index)
+    }
+    fn empty_string(&self) -> Index<str> {
+        Arena::empty_string(self.as_ref())
+    }
+}
+impl<'a> ArenaLike for &'a Arena {
+    fn get<T: Indexable + ?Sized>(&self, index: Index<T>) -> &T {
+        Arena::get(self, index)
+    }
+    fn empty_string(&self) -> Index<str> {
+        Arena::empty_string(self)
     }
 }

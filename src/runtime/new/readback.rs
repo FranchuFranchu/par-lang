@@ -264,7 +264,7 @@ impl Handle {
     }
 }
 
-impl Linker for Handle {
+impl Linker<Arc<Arena>> for Handle {
     fn arena(&self) -> Arc<Arena> {
         self.arena.clone()
     }

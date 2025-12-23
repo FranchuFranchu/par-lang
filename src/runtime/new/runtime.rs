@@ -276,8 +276,8 @@ pub enum SharedHole {
     Filled(SyncShared),
     Unfilled(Vec<Node>),
 }
-pub struct Runtime {
-    pub arena: Arc<Arena>,
+pub struct Runtime<A: ArenaLike> {
+    pub arena: A,
     pub redexes: Vec<(Node, Node)>,
     pub rewrites: Rewrites,
 }
@@ -285,9 +285,9 @@ pub struct Runtime {
 /// This trait is implemented by everything that knows how to link two nodes together
 /// and that holds a pointer to the arena. This prevents duplication between [`Runtime`] and
 /// [`Handle`], which are the two implementors of this trait.
-pub trait Linker {
+pub trait Linker<A: ArenaLike> {
     fn link(&mut self, a: Node, b: Node);
-    fn arena(&self) -> Arc<Arena>;
+    fn arena(&self) -> A;
 
     fn show<'a, 'b>(&'b self, node: &'a Node) -> String {
         let arena_ref = self.arena();
@@ -384,7 +384,7 @@ pub trait Linker {
     }
 }
 
-impl From<Arc<Arena>> for Runtime {
+impl From<Arc<Arena>> for Runtime<Arc<Arena>> {
     fn from(arena: Arc<Arena>) -> Self {
         Self {
             arena,
@@ -400,16 +400,16 @@ macro_rules! sym {
     };
 }
 
-impl Linker for Runtime {
+impl<A: ArenaLike> Linker<A> for Runtime<A> {
     fn link(&mut self, a: Node, b: Node) {
         self.redexes.push((a, b));
     }
-    fn arena(&self) -> Arc<Arena> {
+    fn arena(&self) -> A {
         self.arena.clone()
     }
 }
 
-impl Runtime {
+impl<A: ArenaLike> Runtime<A> {
     // Misc methods.
     fn set_var(&mut self, instance: Instance, index: usize, value: Node) {
         let mut lock = instance.vars.0.lock().unwrap();
@@ -571,7 +571,7 @@ impl Runtime {
             Global(Instance, Index<Global>, &'a Global),
         }
         impl<'a> NodeRef<'a> {
-            fn from_node(arena: &'a Arena, node: Node) -> NodeRef<'a> {
+            fn from_node(arena: &'a impl ArenaLike, node: Node) -> NodeRef<'a> {
                 match node {
                     Node::Linear(linear) => NodeRef::Linear(linear),
                     Node::Shared(shared) => NodeRef::Shared(shared),

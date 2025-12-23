@@ -1,17 +1,17 @@
 use std::fmt::Display;
 
-use crate::runtime::new::arena::Arena;
+use crate::runtime::new::arena::ArenaLike;
 use crate::runtime::new::runtime::{
     Global, GlobalPtr, Linear, Node, PackageBody, Shared, SyncShared, Value,
 };
 
-pub struct Shower<'a> {
-    pub arena: &'a Arena,
+pub struct Shower<'a, A: ArenaLike> {
+    pub arena: &'a A,
     pub deref_globals: bool,
 }
 
-impl<'a> Shower<'a> {
-    pub fn from_arena(arena: &'a Arena) -> Self {
+impl<'a, A: ArenaLike> Shower<'a, A> {
+    pub fn from_arena(arena: &'a A) -> Self {
         Self {
             arena,
             deref_globals: true,
@@ -19,10 +19,10 @@ impl<'a> Shower<'a> {
     }
 }
 
-pub struct Showable<'a, 'b, P>(pub P, pub &'b Shower<'a>);
+pub struct Showable<'a, 'b, P, A: ArenaLike>(pub P, pub &'b Shower<'a, A>);
 //pub struct ShowableGlobal<'a, 'b>(&'a Instance, &'a Global, &'b mut Shower<'a>);
 
-impl<'a, 'b> std::fmt::Display for Showable<'a, 'b, &'a Node> {
+impl<'a, 'b, A: ArenaLike> std::fmt::Display for Showable<'a, 'b, &'a Node, A> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self.0 {
             Node::Linear(linear) => write!(f, "-{}", Showable(linear, self.1)),
@@ -32,13 +32,13 @@ impl<'a, 'b> std::fmt::Display for Showable<'a, 'b, &'a Node> {
     }
 }
 
-impl<'a, 'b> std::fmt::Display for Showable<'a, 'b, &'a Box<Node>> {
+impl<'a, 'b, A: ArenaLike> std::fmt::Display for Showable<'a, 'b, &'a Box<Node>, A> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         Showable(self.0.as_ref(), self.1).fmt(f)
     }
 }
 
-impl<'a, 'b> std::fmt::Display for Showable<'a, 'b, &'a Linear> {
+impl<'a, 'b, A: ArenaLike> std::fmt::Display for Showable<'a, 'b, &'a Linear, A> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self.0 {
             Linear::Value(value) => {
@@ -66,7 +66,7 @@ impl<'a, 'b> std::fmt::Display for Showable<'a, 'b, &'a Linear> {
     }
 }
 
-impl<'a, 'b> std::fmt::Display for Showable<'a, 'b, &'a Shared> {
+impl<'a, 'b, A: ArenaLike> std::fmt::Display for Showable<'a, 'b, &'a Shared, A> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self.0 {
             Shared::Async(mutex) => {
@@ -90,7 +90,7 @@ impl<'a, 'b> std::fmt::Display for Showable<'a, 'b, &'a Shared> {
         Ok(())
     }
 }
-impl<'a, 'b> std::fmt::Display for Showable<'a, 'b, &'a SyncShared> {
+impl<'a, 'b, A: ArenaLike> std::fmt::Display for Showable<'a, 'b, &'a SyncShared, A> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self.0 {
             SyncShared::Package(index, shared) => {
@@ -104,7 +104,7 @@ impl<'a, 'b> std::fmt::Display for Showable<'a, 'b, &'a SyncShared> {
     }
 }
 
-impl<'a, 'b> std::fmt::Display for Showable<'a, 'b, &'a Global> {
+impl<'a, 'b, A: ArenaLike> std::fmt::Display for Showable<'a, 'b, &'a Global, A> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self.0 {
             Global::Variable(id) => {
@@ -149,7 +149,7 @@ impl<'a, 'b> std::fmt::Display for Showable<'a, 'b, &'a Global> {
     }
 }
 
-impl<'a, 'b> std::fmt::Display for Showable<'a, 'b, &'a GlobalPtr> {
+impl<'a, 'b, A: ArenaLike> std::fmt::Display for Showable<'a, 'b, &'a GlobalPtr, A> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if self.1.deref_globals {
             write!(f, "{}", Showable(self.1.arena.get(self.0.clone()), self.1))?;
@@ -160,9 +160,9 @@ impl<'a, 'b> std::fmt::Display for Showable<'a, 'b, &'a GlobalPtr> {
     }
 }
 
-impl<'a, 'b, P> std::fmt::Display for Showable<'a, 'b, &'a Value<P>>
+impl<'a, 'b, P, A: ArenaLike> std::fmt::Display for Showable<'a, 'b, &'a Value<P>, A>
 where
-    Showable<'a, 'b, &'a P>: Display,
+    Showable<'a, 'b, &'a P, A>: Display,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         use crate::runtime::new::runtime::Value::*;
@@ -196,7 +196,7 @@ where
 use super::runtime::Package;
 use std::sync::OnceLock;
 
-impl<'a, 'b> std::fmt::Display for Showable<'a, 'b, &'a OnceLock<Package>> {
+impl<'a, 'b, A: ArenaLike> std::fmt::Display for Showable<'a, 'b, &'a OnceLock<Package>, A> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let package = self.0;
 
@@ -209,7 +209,7 @@ impl<'a, 'b> std::fmt::Display for Showable<'a, 'b, &'a OnceLock<Package>> {
     }
 }
 
-impl<'a, 'b> std::fmt::Display for Showable<'a, 'b, &'a PackageBody> {
+impl<'a, 'b, A: ArenaLike> std::fmt::Display for Showable<'a, 'b, &'a PackageBody, A> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let package = self.0;
         if package.debug_name.len() > 0 {
