@@ -403,3 +403,13 @@ impl TripleArena {
         self.read = self.permanent.postfix_arena();
     }
 }
+
+impl ArenaLike for Arc<TripleArena> {
+    fn get<T: Indexable + ?Sized>(&self, index: Index<T>) -> &T {
+        TripleArena::get(self, index)
+    }
+
+    fn empty_string(&self) -> Index<str> {
+        TripleArena::empty_string(&self)
+    }
+}

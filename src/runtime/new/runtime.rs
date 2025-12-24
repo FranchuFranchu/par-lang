@@ -69,6 +69,18 @@ pub struct Instance {
 }
 
 impl Instance {
+    pub fn from_num_vars(num_vars: usize) -> Self {
+        let mut vars = Vec::with_capacity(num_vars);
+        for _ in 0..num_vars {
+            vars.push(None);
+        }
+        Instance {
+            vars: Arc::new(InstanceInner(Mutex::new(vars.into_boxed_slice()))),
+        }
+    }
+}
+
+impl Instance {
     fn identifier(&self) -> usize {
         (Arc::as_ptr(&self.vars) as usize >> 3) & 0xFF
     }
@@ -319,14 +331,7 @@ pub trait Linker<A: ArenaLike> {
 
     // Package-related methods
     fn create_package_instance(&mut self, package: &Package) -> Instance {
-        let num_vars = package.num_vars;
-        let mut vars = Vec::with_capacity(num_vars);
-        for _ in 0..num_vars {
-            vars.push(None);
-        }
-        Instance {
-            vars: Arc::new(InstanceInner(Mutex::new(vars.into_boxed_slice()))),
-        }
+        Instance::from_num_vars(package.num_vars)
     }
 
     fn instatiate_package_body(&mut self, instance: Instance, body: &PackageBody) -> (Node, Node) {
@@ -410,6 +415,13 @@ impl<A: ArenaLike> Linker<A> for Runtime<A> {
 }
 
 impl<A: ArenaLike> Runtime<A> {
+    pub fn new(arena: A) -> Self {
+        Self {
+            arena,
+            redexes: Default::default(),
+            rewrites: Default::default(),
+        }
+    }
     // Misc methods.
     fn set_var(&mut self, instance: Instance, index: usize, value: Node) {
         let mut lock = instance.vars.0.lock().unwrap();
