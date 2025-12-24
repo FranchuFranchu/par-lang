@@ -353,6 +353,7 @@ impl<'a> ArenaLike for &'a Arena {
     }
 }
 
+#[derive(Default)]
 pub struct TripleArena {
     permanent: Arena,
     read: Arena,
