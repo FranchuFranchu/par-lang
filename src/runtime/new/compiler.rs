@@ -23,8 +23,10 @@ use crate::{
     runtime::{
         new::{
             arena::{Index, TripleArena},
+            freezer::Freezer,
             runtime::{
-                Global, GlobalCont, Instance, Linker, Node, Package, PackagePtr, Runtime, Value,
+                Global, GlobalCont, Instance, Linker, Node, Package, PackageBody, PackagePtr,
+                Runtime, Value,
             },
         },
         old::net::FanBehavior,
@@ -354,45 +356,91 @@ impl Compiler {
                 self.current.context = parent_context;
                 Ok(created_chan)
             }
-            Expression::Primitive(span, primitive, _) => todo!(),
-            Expression::External(_, _, _) => todo!(),
+            Expression::Primitive(span, primitive, _) => {
+                Ok(Global::Value(Value::Primitive(primitive.clone())))
+            }
+            Expression::External(_, f, _) => Ok(Global::Value(Value::ExternalFn(*f))),
         }
     }
-    fn finalize_package(&mut self, root: Global, captures: Global) {
+    fn finalize_package(&mut self, root: Global, captures: Global) -> Package {
         let (num_vars, redexes) = self.current.finalize();
         self.current.arena.flush_to_temporary();
         let arena = Arc::new(core::mem::take(&mut self.current.arena));
         let mut runtime = Runtime::new(arena.clone());
-        let mut instance = Instance::from_num_vars(self.current.num_vars);
+        let instance = Instance::from_num_vars(self.current.num_vars);
         for (a, b) in redexes {
             runtime.link(
                 Node::Global(instance.clone(), a),
                 Node::Global(instance.clone(), b),
             );
         }
-        let mut redexes: Vec<_> = std::iter::from_fn(|| runtime.reduce())
+        let redexes: Vec<_> = std::iter::from_fn(|| runtime.reduce())
             .map(|(a, b)| (Node::Linear(a.into()), b))
             .collect();
         drop(runtime);
-        let arena = Arc::into_inner(arena).unwrap();
-
+        let mut arena = Arc::into_inner(arena).unwrap();
+        let mut freezer = Freezer::new(&mut arena);
+        let root = freezer.freeze_global(&instance, &root);
+        let captures = freezer.freeze_global(&instance, &captures);
+        let root = freezer.arena.alloc(root);
+        let captures = freezer.arena.alloc(captures);
+        let redexes: Vec<_> = redexes
+            .into_iter()
+            .map(|(a, b)| {
+                let a = freezer.freeze_node(&a);
+                let a = freezer.arena.alloc(a);
+                let b = freezer.freeze_node(&b);
+                let b = freezer.arena.alloc(b);
+                (a, b)
+            })
+            .collect();
+        let redexes = freezer.arena.alloc_clone(redexes.as_ref());
         // readback root, captures, and redexes into the arena
         // (now that it's pre-reduced)
         //
         // create a new package
+        let package = Package {
+            num_vars,
+            body: PackageBody {
+                root,
+                captures,
+                debug_name: String::new(),
+                redexes,
+            },
+        };
+        arena.flush_to_permanent();
+        self.current.arena = arena;
+        package
     }
     fn compile_definitions(
         &mut self,
         definitions: &IndexMap<GlobalName, (Definition<Arc<Expression<Type>>>, Type)>,
     ) -> Result<()> {
         for (k, (v, t)) in definitions.iter() {
-            let root = self.compile_expression(&v.span, &v.expression)?;
-            self.finalize_package(root, Global::Destruct(GlobalCont::Continue));
+            let p = self.current.arena.alloc(OnceLock::new());
+            self.definition_packages.insert(k.clone(), p);
         }
-        while let Some((package, span, pack, root)) = self.box_queue.pop() {
+        for (k, (v, t)) in definitions.iter() {
+            let root = self.compile_expression(&v.span, &v.expression)?;
+            let package = self.finalize_package(root, Global::Destruct(GlobalCont::Continue));
+            let package_destination = self.definition_packages.get(k).unwrap();
+            self.current
+                .arena
+                .get(*package_destination)
+                .set(package)
+                .unwrap();
+        }
+        while let Some((package_destination, span, pack, root)) = self.box_queue.pop() {
             let (a, b) = self.current.new_var();
             let context = self.current.unpack(a, pack);
             self.current.context = context;
+            let root = self.compile_expression(&span, &root)?;
+            let package = self.finalize_package(root, b);
+            self.current
+                .arena
+                .get(package_destination)
+                .set(package)
+                .unwrap();
         }
         Ok(())
     }

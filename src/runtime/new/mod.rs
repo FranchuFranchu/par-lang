@@ -34,6 +34,7 @@
 
 pub mod arena;
 pub mod compiler;
+pub mod freezer;
 pub mod readback;
 pub mod reducer;
 pub mod runtime;
