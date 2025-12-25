@@ -3,7 +3,7 @@ use futures::{future::RemoteHandle, task::SpawnExt};
 use crate::{
     par::{language::GlobalName, types::Type},
     runtime::{
-        new::{self, transpiler::Transpiled},
+        new::{self, compiler::Compiled as V3Compiled},
         old::{self, compiler::IcCompiled},
         readback::Handle,
     },
@@ -16,7 +16,7 @@ use std::{fmt::Display, sync::Arc};
 #[derive(Clone)]
 pub enum Backend {
     Old(IcCompiled),
-    New(Transpiled),
+    New(V3Compiled),
 }
 
 #[derive(Clone)]
@@ -41,7 +41,7 @@ impl Compiled {
     ) -> Result<Self, crate::runtime::RuntimeCompilerError> {
         Ok(Self {
             backend: if use_new {
-                Backend::New(Transpiled::compile_file(module)?)
+                Backend::New(V3Compiled::compile_file(module)?)
             } else {
                 Backend::Old(IcCompiled::compile_file(module)?)
             },

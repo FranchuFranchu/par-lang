@@ -7,6 +7,7 @@
 use std::{
     cell::OnceCell,
     collections::{BTreeSet, HashMap},
+    fmt::Display,
     sync::{Arc, OnceLock},
 };
 
@@ -18,12 +19,14 @@ use crate::{
         language::{GlobalName, LocalName},
         process::{Captures, Command, Expression, Process, VariableUsage},
         program::{CheckedModule, Definition},
-        types::{Type, TypeDefs},
+        types::{visit, Type, TypeDefs, TypeError},
     },
     runtime::{
         new::{
-            arena::{Index, Indexable, TripleArena},
+            arena::{Arena, Index, Indexable, TripleArena},
             freezer::Freezer,
+            readback::Handle,
+            reducer::{NetHandle, Reducer},
             runtime::{
                 Global, GlobalCont, Instance, Linker, Node, Package, PackageBody, PackagePtr,
                 Runtime, Value,
@@ -413,40 +416,39 @@ impl Compiler {
         self.current.arena.flush_to_temporary();
         let arena = Arc::new(core::mem::take(&mut self.current.arena));
         let mut runtime = Runtime::new(arena.clone());
-        let instance = Instance::from_num_vars(self.current.num_vars);
+        let instance = Instance::from_num_vars(num_vars);
         for (a, b) in redexes {
             runtime.link(
                 Node::Global(instance.clone(), a),
                 Node::Global(instance.clone(), b),
             );
         }
+        runtime.status();
         let redexes: Vec<_> = std::iter::from_fn(|| runtime.reduce())
             .map(|(a, b)| (Node::Linear(a.into()), b))
             .collect();
         drop(runtime);
         let mut arena = Arc::into_inner(arena).unwrap();
-        let mut freezer = Freezer::new(&mut arena);
-        let root = freezer.freeze_global(&instance, &root);
-        let captures = freezer.freeze_global(&instance, &captures);
-        let root = freezer.arena.alloc(root);
-        let captures = freezer.arena.alloc(captures);
+        let mut write = core::mem::take(&mut arena.write);
+        let mut freezer = Freezer::new(&mut write);
+        let root = freezer.freeze_global(&arena, &instance, &root);
+        let captures = freezer.freeze_global(&arena, &instance, &captures);
+        println!("{:?} {:?} {:?}", root, captures, redexes);
         let redexes: Vec<_> = redexes
             .into_iter()
             .map(|(a, b)| {
-                let a = freezer.freeze_node(&a);
-                let a = freezer.arena.alloc(a);
-                let b = freezer.freeze_node(&b);
-                let b = freezer.arena.alloc(b);
+                let a = freezer.freeze_node(&arena, &a);
+                let b = freezer.freeze_node(&arena, &b);
                 (a, b)
             })
             .collect();
-        let redexes = freezer.arena.alloc_clone(redexes.as_ref());
+        let redexes = freezer.write.alloc_clone(redexes.as_ref());
         // readback root, captures, and redexes into the arena
         // (now that it's pre-reduced)
         //
         // create a new package
         let package = Package {
-            num_vars,
+            num_vars: freezer.num_vars,
             body: PackageBody {
                 root,
                 captures,
@@ -454,7 +456,10 @@ impl Compiler {
                 redexes,
             },
         };
+        println!("{}", write);
+        arena.write = write;
         arena.flush_to_permanent();
+        arena.reset_buffers();
         self.current.arena = arena;
         package
     }
@@ -466,6 +471,8 @@ impl Compiler {
             let p = self.alloc(OnceLock::new());
             self.definition_packages.insert(k.clone(), p);
         }
+        self.current.arena.flush_to_permanent();
+        self.current.arena.reset_buffers();
         for (k, (v, t)) in definitions.iter() {
             let root = self.compile_expression(&v.span, &v.expression)?;
             let package = self.finalize_package(root, Global::Destruct(GlobalCont::Continue));
@@ -492,8 +499,76 @@ impl Compiler {
     }
 }
 
-pub fn compile_file(program: &CheckedModule) -> Result<()> {
+fn compile_file(program: &CheckedModule) -> Result<Compiler> {
     let mut compiler = Compiler::default();
     compiler.compile_definitions(&program.definitions)?;
-    Ok(())
+    Ok(compiler)
+}
+
+#[derive(Clone)]
+pub struct Compiled {
+    pub arena: Arc<Arena>,
+    pub name_to_package: HashMap<GlobalName, PackagePtr>,
+    pub type_defs: TypeDefs,
+}
+
+impl Display for Compiled {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.arena)
+    }
+}
+
+impl Compiled {
+    pub fn compile_file(
+        module: &crate::par::program::CheckedModule,
+    ) -> core::result::Result<Self, crate::runtime::RuntimeCompilerError> {
+        let type_defs = module.type_defs.clone();
+        let compiler = compile_file(module).unwrap();
+        let mut arena = compiler.current.arena.permanent;
+        println!("Arena: {}", arena);
+        let mut closure = |ty: &Type| {
+            fn helper(
+                ty: &Type,
+                defs: &TypeDefs,
+                arena: &mut Arena,
+            ) -> std::result::Result<(), TypeError> {
+                match ty {
+                    Type::Either(_, variants) | Type::Choice(_, variants) => {
+                        for k in variants.keys() {
+                            arena.intern(k.string.as_str());
+                        }
+                    }
+                    _ => {}
+                }
+                visit::continue_deref(&ty, defs, |ty: &Type| helper(ty, &defs, arena))
+            }
+            helper(ty, &type_defs, &mut arena)
+        };
+        for (_, _, ty) in type_defs.clone().globals.values() {
+            closure(ty).unwrap();
+        }
+
+        Ok(Self {
+            arena: Arc::new(arena),
+            type_defs,
+            name_to_package: compiler.definition_packages,
+        })
+    }
+
+    pub fn get_with_name(&self, name: &GlobalName) -> Option<PackagePtr> {
+        Some(self.name_to_package.get(name).cloned()?)
+    }
+
+    pub fn new_runtime(&self) -> Runtime<Arc<Arena>> {
+        Runtime::from(self.arena.clone())
+    }
+    pub fn new_reducer(&self) -> Reducer {
+        Reducer::from(Runtime::from(self.arena.clone()))
+    }
+    pub async fn instantiate(&self, handle: NetHandle, name: &GlobalName) -> Option<Handle> {
+        let package = self.get_with_name(name)?;
+        Handle::from_package(self.arena.clone(), handle, package)
+            .await
+            .ok()
+    }
 }

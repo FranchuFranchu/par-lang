@@ -9,6 +9,7 @@ use crate::runtime::new::{
 
 use super::runtime::{Global, Package};
 
+#[derive(Debug)]
 struct ArenaSlots<T> {
     inner: Vec<T>,
     start: usize,
@@ -57,7 +58,11 @@ impl<T> ArenaSlots<T> {
             ..Default::default()
         }
     }
-    fn append(&mut self, other: &mut ArenaSlots<T>) {
+    fn append(&mut self, other: &mut ArenaSlots<T>)
+    where
+        T: Debug,
+    {
+        println!("{:?} {:?}", self, other);
         assert!(other.start == self.end_index());
         self.inner.append(&mut other.inner);
         self.intern
@@ -89,13 +94,13 @@ pub struct Arena {
 type ArenaTrim = (usize, usize, usize, usize, usize);
 
 impl Arena {
-    fn slots_lengths(&self) -> ArenaTrim {
+    fn slots_end_indices(&self) -> ArenaTrim {
         (
-            self.nodes.start,
-            self.packages.start,
-            self.redexes.start,
-            self.case_branches.start,
-            self.strings_start,
+            self.nodes.end_index(),
+            self.packages.end_index(),
+            self.redexes.end_index(),
+            self.case_branches.end_index(),
+            self.strings_start + self.strings.len(),
         )
     }
     fn initialize_with_slot_start(
@@ -119,7 +124,7 @@ impl Arena {
         // TODO append strings
     }
     fn postfix_arena(&self) -> Arena {
-        Self::initialize_with_slot_start(self.slots_lengths())
+        Self::initialize_with_slot_start(self.slots_end_indices())
     }
 
     /// Get a reference
@@ -136,7 +141,11 @@ impl Arena {
         T::contains(self, index)
     }
     pub fn memory_size(&self) -> usize {
-        0
+        self.nodes.memory_usage()
+            + self.packages.memory_usage()
+            + self.redexes.memory_usage()
+            + self.case_branches.memory_usage()
+            + self.strings.len()
     }
     pub fn empty_string(&self) -> Index<str> {
         Index((0, 0))
@@ -355,9 +364,9 @@ impl<'a> ArenaLike for &'a Arena {
 
 #[derive(Default)]
 pub struct TripleArena {
-    permanent: Arena,
-    read: Arena,
-    write: Arena,
+    pub permanent: Arena,
+    pub read: Arena,
+    pub write: Arena,
 }
 
 impl TripleArena {

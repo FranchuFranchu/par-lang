@@ -78,11 +78,16 @@ impl Instance {
             vars: Arc::new(InstanceInner(Mutex::new(vars.into_boxed_slice()))),
         }
     }
+    pub fn at<R>(&self, index: &usize, inner: impl FnOnce(&mut Option<Node>) -> R) -> R {
+        let mut lock = self.vars.0.lock().unwrap();
+        let slot = lock.get_mut(*index).expect("Invalid index in variable!");
+        inner(slot)
+    }
 }
 
 impl Instance {
-    fn identifier(&self) -> usize {
-        (Arc::as_ptr(&self.vars) as usize >> 3) & 0xFF
+    pub fn identifier(&self) -> usize {
+        Arc::as_ptr(&self.vars).addr()
     }
 }
 
@@ -830,7 +835,7 @@ impl Node {
                 format!("Global@{:x}.{}", i.identifier(), g.variant_name())
             }*/
             Node::Global(i, _g) => {
-                format!("Global@{:x}.{}", i.identifier(), "REF")
+                format!("Global@{:x}.{}", (i.identifier() >> 3) & 0xFF, "REF")
             }
         }
     }

@@ -13,18 +13,25 @@ use crate::{
 use std::fmt::Write;
 use std::sync::Arc;
 
-#[derive(Default)]
 pub struct BuildConfig {
     pub new_runtime: bool,
     pub show_stats: bool,
+    pub builtins: bool,
+}
+
+impl Default for BuildConfig {
+    fn default() -> Self {
+        BuildConfig {
+            new_runtime: false,
+            show_stats: false,
+            builtins: true,
+        }
+    }
 }
 
 impl<'a, T: Iterator<Item = &'a String>> From<T> for BuildConfig {
     fn from(t: T) -> BuildConfig {
-        let mut default = BuildConfig {
-            new_runtime: false,
-            show_stats: false,
-        };
+        let mut default = BuildConfig::default();
         for i in t {
             if i == "rt-v2" {
                 default.new_runtime = false;
@@ -35,6 +42,11 @@ impl<'a, T: Iterator<Item = &'a String>> From<T> for BuildConfig {
                 default.show_stats = false;
             } else if i == "stats" {
                 default.show_stats = true;
+            };
+            if i == "no-builtins" {
+                default.builtins = false;
+            } else if i == "builtins" {
+                default.builtins = true;
             };
         }
         default
@@ -164,7 +176,9 @@ impl BuildResult {
             Err(ParseAndCompileError::Parse(error)) => return Self::SyntaxError { error },
             Err(ParseAndCompileError::Compile(error)) => return Self::CompileError { error },
         };
-        import_builtins(&mut module);
+        if config.builtins {
+            import_builtins(&mut module);
+        }
         Self::from_compiled(config, module)
     }
 
