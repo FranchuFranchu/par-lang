@@ -22,7 +22,7 @@ use crate::{
     },
     runtime::{
         new::{
-            arena::{Index, TripleArena},
+            arena::{Index, Indexable, TripleArena},
             freezer::Freezer,
             runtime::{
                 Global, GlobalCont, Instance, Linker, Node, Package, PackageBody, PackagePtr,
@@ -172,6 +172,7 @@ impl PackageState {
         ret
     }
     pub fn define_var(&mut self, name: Var) -> Global {
+        let _ = self.close_var(&name);
         let (a, b) = self.new_var();
         self.context.insert(name, a);
         b
@@ -208,10 +209,13 @@ impl PackageState {
         self.close_var_inner(var);
         Ok(())
     }
-    fn finalize(&mut self) -> (usize, Vec<(Index<Global>, Index<Global>)>) {
+    fn close_all_vars(&mut self) {
         for (name, var) in core::mem::take(&mut self.context.vars) {
             self.close_var_inner(var);
         }
+    }
+    fn finalize(&mut self) -> (usize, Vec<(Index<Global>, Index<Global>)>) {
+        self.close_all_vars();
         (
             core::mem::replace(&mut self.num_vars, 0),
             core::mem::take(&mut self.redexes),
@@ -239,6 +243,16 @@ pub struct Compiler {
 }
 
 impl Compiler {
+    pub fn get<T: Indexable + ?Sized>(&self, index: Index<T>) -> &T {
+        self.current.arena.get(index)
+    }
+    pub fn alloc<T: Indexable>(&mut self, data: T) -> Index<T> {
+        self.current.arena.alloc(data)
+    }
+    pub fn alloc_clone<T: Indexable + ?Sized>(&mut self, data: &T) -> Index<T> {
+        self.alloc_clone(data)
+    }
+
     fn compile_global_name(&mut self, global_name: &GlobalName) -> Global {
         let package = self
             .definition_packages
@@ -246,7 +260,7 @@ impl Compiler {
             .or_insert_with(|| self.current.arena.alloc(OnceLock::<Package>::new()))
             .clone();
 
-        let captures = self.current.arena.alloc(Global::Value(Value::Break));
+        let captures = self.alloc(Global::Value(Value::Break));
         let global = Global::Package(
             package,
             captures,
@@ -262,13 +276,45 @@ impl Compiler {
         cmd: &Command<Type>,
     ) -> Result<()> {
         match cmd {
-            Command::Link(expression) => todo!(),
-            Command::Send(expression, process) => todo!(),
-            Command::Receive(local_name, _, _, process, local_names) => todo!(),
+            Command::Link(expr) => {
+                let var = self.current.get_var(&Var::Name(subject.clone()), usage)?;
+                let expr = self.compile_expression(span, expr)?;
+                self.current.link(var, expr);
+                self.current.close_all_vars();
+                Ok(())
+            }
+            Command::Send(expr, proc) => {
+                let expr = self.compile_expression(span, expr)?;
+                let var = self.current.get_var(&Var::Name(subject.clone()), usage)?;
+                let new = self.current.define_var(Var::Name(subject.clone()));
+                let tgt = Global::Value(Value::Pair(self.alloc(new), self.alloc(expr)));
+                self.current.link(var, tgt);
+                self.compile_process(span, proc)
+            }
+            Command::Receive(local_name, _, _, proc, _) => {
+                let var = self.current.get_var(&Var::Name(subject.clone()), usage)?;
+                let new = self.current.define_var(Var::Name(subject.clone()));
+                let arg = self.current.define_var(Var::Name(local_name.clone()));
+                let tgt = Global::Destruct(GlobalCont::Par(self.alloc(new), self.alloc(arg)));
+                self.current.link(var, tgt);
+                self.compile_process(span, proc)
+            }
             Command::Signal(local_name, process) => todo!(),
             Command::Case(local_names, items, process) => todo!(),
-            Command::Break => todo!(),
-            Command::Continue(process) => todo!(),
+            Command::Break => {
+                let var = self.current.get_var(&Var::Name(subject.clone()), usage)?;
+                let tgt = Global::Value(Value::Break);
+                self.current.link(var, tgt);
+                self.current.close_all_vars();
+                Ok(())
+            }
+            Command::Continue(process) => {
+                let var = self.current.get_var(&Var::Name(subject.clone()), usage)?;
+                let tgt = Global::Destruct(GlobalCont::Continue);
+                self.current.link(var, tgt);
+                self.compile_process(span, process)?;
+                Ok(())
+            }
             Command::Begin {
                 unfounded,
                 label,
@@ -321,13 +367,13 @@ impl Compiler {
                 .current
                 .get_var(&Var::Name(local_name.clone()), variable_usage),
             Expression::Box(span, captures, expression, _) => {
-                let box_package = self.current.arena.alloc(OnceLock::new());
+                let box_package = self.alloc(OnceLock::new());
 
                 let child_context = self.current.capture(captures)?;
                 let parent_context = core::mem::replace(&mut self.current.context, child_context);
                 let (captures_global, pack_data) = self.current.pack();
                 self.current.context = parent_context;
-                let captures_global = self.current.arena.alloc(captures_global);
+                let captures_global = self.alloc(captures_global);
 
                 self.box_queue.push((
                     box_package.clone(),
@@ -417,7 +463,7 @@ impl Compiler {
         definitions: &IndexMap<GlobalName, (Definition<Arc<Expression<Type>>>, Type)>,
     ) -> Result<()> {
         for (k, (v, t)) in definitions.iter() {
-            let p = self.current.arena.alloc(OnceLock::new());
+            let p = self.alloc(OnceLock::new());
             self.definition_packages.insert(k.clone(), p);
         }
         for (k, (v, t)) in definitions.iter() {
