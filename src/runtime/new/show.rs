@@ -132,7 +132,7 @@ impl<'a, 'b, A: ArenaLike> std::fmt::Display for Showable<'a, 'b, &'a Global, A>
                         for (k, v) in self.1.arena.get(branches.clone()).iter() {
                             write!(
                                 f,
-                                "{} @{} ",
+                                "{} {} ",
                                 self.1.arena.get(k.clone()),
                                 Showable(v, self.1)
                             )?;

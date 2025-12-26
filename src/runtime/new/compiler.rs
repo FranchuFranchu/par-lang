@@ -31,6 +31,7 @@ use crate::{
                 Global, GlobalCont, Instance, Linker, Node, Package, PackageBody, PackagePtr,
                 Runtime, Value,
             },
+            show::{Showable, Shower},
         },
         old::net::FanBehavior,
     },
@@ -49,14 +50,14 @@ pub enum Var {
     Loop(Option<LocalName>),
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct VarState {
     value: Global,
     /// The list of destinations that will get plugged in to a fanout when the context is closed or the variable is moved out of.
     destinations: Vec<Global>,
 }
 
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub struct Context {
     vars: HashMap<Var, VarState>,
 }
@@ -73,20 +74,23 @@ impl Context {
     }
 }
 
-#[derive(Default)]
+#[derive(Default, Debug, Clone)]
 pub struct PackData {
     names: Vec<Var>,
 }
 
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub struct PackageState {
     context: Context,
     num_vars: usize,
-    arena: TripleArena,
+    arena: Option<TripleArena>,
     redexes: Vec<(Index<Global>, Index<Global>)>,
 }
 
 impl PackageState {
+    pub fn arena(&mut self) -> &mut TripleArena {
+        self.arena.as_mut().unwrap()
+    }
     pub fn multiplex_trees(&mut self, mut trees: Vec<Global>) -> Global {
         if trees.len() == 0 {
             Global::Value(Value::Break)
@@ -95,7 +99,7 @@ impl PackageState {
         } else {
             let new_trees = trees.split_off(trees.len() / 2);
             let (a, b) = (self.multiplex_trees(trees), self.multiplex_trees(new_trees));
-            Global::Value(Value::Pair(self.arena.alloc(a), self.arena.alloc(b)))
+            Global::Value(Value::Pair(self.arena().alloc(a), self.arena().alloc(b)))
         }
     }
     pub fn demultiplex_trees(&mut self, mut trees: Vec<Global>) -> Global {
@@ -106,7 +110,10 @@ impl PackageState {
         } else {
             let new_trees = trees.split_off(trees.len() / 2);
             let (a, b) = (self.multiplex_trees(trees), self.multiplex_trees(new_trees));
-            Global::Destruct(GlobalCont::Par(self.arena.alloc(a), self.arena.alloc(b)))
+            Global::Destruct(GlobalCont::Par(
+                self.arena().alloc(a),
+                self.arena().alloc(b),
+            ))
         }
     }
     fn capture(&mut self, captures: &Captures) -> Result<Context> {
@@ -146,7 +153,7 @@ impl PackageState {
         }
         (self.multiplex_trees(trees), pack_data)
     }
-    fn unpack(&mut self, global: Global, pack: PackData) -> Context {
+    fn unpack(&mut self, global: Global, pack: &PackData) -> Context {
         let mut context = Context::default();
         let mut trees = vec![];
         for var in &pack.names {
@@ -163,8 +170,8 @@ impl PackageState {
     }
 
     pub fn link(&mut self, a: Global, b: Global) {
-        self.redexes
-            .push((self.arena.alloc(a), self.arena.alloc(b)));
+        let tup = (self.arena().alloc(a), self.arena().alloc(b));
+        self.redexes.push(tup);
     }
     pub fn new_var(&mut self) -> (Global, Global) {
         let ret = (
@@ -185,7 +192,7 @@ impl PackageState {
         self.context
             .vars
             .get_mut(var)
-            .ok_or(format!("Couldn't find var {:?}", var))?
+            .expect(&format!("Couldn't find var {:?}", var))
             .destinations
             .push(a);
         Ok(b)
@@ -199,17 +206,15 @@ impl PackageState {
         if var.destinations.len() == 1 {
             self.link(var.value, var.destinations.pop().unwrap());
         } else {
-            let node = Global::Fanout(self.arena.alloc_clone(&var.destinations));
+            let node = Global::Fanout(self.arena().alloc_clone(&var.destinations));
             self.link(var.value, node);
         }
     }
     fn close_var(&mut self, var: &Var) -> Result<()> {
-        let mut var = self
-            .context
-            .vars
-            .remove(var)
-            .ok_or(format!("Couldn't find var {:?}", var))?;
-        self.close_var_inner(var);
+        let mut var = self.context.vars.remove(var);
+        if let Some(var) = var {
+            self.close_var_inner(var);
+        }
         Ok(())
     }
     fn close_all_vars(&mut self) {
@@ -239,28 +244,57 @@ type CompileBox = (PackagePtr, Span, PackData, Arc<Expression<Type>>);
 
 #[derive(Default)]
 pub struct Compiler {
-    current: PackageState,
+    current: Vec<PackageState>,
     box_queue: Vec<CompileBox>,
     type_defs: TypeDefs,
     definition_packages: HashMap<GlobalName, Index<OnceLock<Package>>>,
 }
 
 impl Compiler {
+    pub fn push_current(&mut self, num_vars: usize) {
+        let arena = self.current.last_mut().map(|x| x.arena.take()).flatten();
+        self.current.push(PackageState::default());
+        self.current().num_vars = num_vars;
+        self.current().arena = arena;
+    }
+    pub fn pop_current(&mut self) -> PackageState {
+        let arena = self.current().arena.take();
+        let p = self.current.pop().unwrap();
+        self.current().arena = arena;
+        p
+    }
+    pub fn current(&mut self) -> &mut PackageState {
+        self.current.last_mut().unwrap()
+    }
+    pub fn arena(&mut self) -> &mut TripleArena {
+        self.current().arena()
+    }
+    pub fn arena_ref(&self) -> &TripleArena {
+        self.current.last().unwrap().arena.as_ref().unwrap()
+    }
     pub fn get<T: Indexable + ?Sized>(&self, index: Index<T>) -> &T {
-        self.current.arena.get(index)
+        self.arena_ref().get(index)
     }
     pub fn alloc<T: Indexable>(&mut self, data: T) -> Index<T> {
-        self.current.arena.alloc(data)
+        self.arena().alloc(data)
     }
     pub fn alloc_clone<T: Indexable + ?Sized>(&mut self, data: &T) -> Index<T> {
-        self.alloc_clone(data)
+        self.arena().alloc_clone(data)
     }
 
     fn compile_global_name(&mut self, global_name: &GlobalName) -> Global {
         let package = self
             .definition_packages
             .entry(global_name.clone())
-            .or_insert_with(|| self.current.arena.alloc(OnceLock::<Package>::new()))
+            .or_insert_with(|| {
+                self.current
+                    .last_mut()
+                    .unwrap()
+                    .arena
+                    .as_mut()
+                    .unwrap()
+                    .alloc(OnceLock::<Package>::new())
+            })
             .clone();
 
         let captures = self.alloc(Global::Value(Value::Break));
@@ -280,41 +314,105 @@ impl Compiler {
     ) -> Result<()> {
         match cmd {
             Command::Link(expr) => {
-                let var = self.current.get_var(&Var::Name(subject.clone()), usage)?;
+                let var = self.current().get_var(&Var::Name(subject.clone()), usage)?;
                 let expr = self.compile_expression(span, expr)?;
-                self.current.link(var, expr);
-                self.current.close_all_vars();
+                self.current().link(var, expr);
+                self.current().close_all_vars();
                 Ok(())
             }
             Command::Send(expr, proc) => {
                 let expr = self.compile_expression(span, expr)?;
-                let var = self.current.get_var(&Var::Name(subject.clone()), usage)?;
-                let new = self.current.define_var(Var::Name(subject.clone()));
+                let var = self.current().get_var(&Var::Name(subject.clone()), usage)?;
+                let new = self.current().define_var(Var::Name(subject.clone()));
                 let tgt = Global::Value(Value::Pair(self.alloc(new), self.alloc(expr)));
-                self.current.link(var, tgt);
+                self.current().link(var, tgt);
                 self.compile_process(span, proc)
             }
             Command::Receive(local_name, _, _, proc, _) => {
-                let var = self.current.get_var(&Var::Name(subject.clone()), usage)?;
-                let new = self.current.define_var(Var::Name(subject.clone()));
-                let arg = self.current.define_var(Var::Name(local_name.clone()));
+                let var = self.current().get_var(&Var::Name(subject.clone()), usage)?;
+                let new = self.current().define_var(Var::Name(subject.clone()));
+                let arg = self.current().define_var(Var::Name(local_name.clone()));
                 let tgt = Global::Destruct(GlobalCont::Par(self.alloc(new), self.alloc(arg)));
-                self.current.link(var, tgt);
+                self.current().link(var, tgt);
                 self.compile_process(span, proc)
             }
-            Command::Signal(local_name, process) => todo!(),
-            Command::Case(local_names, items, process) => todo!(),
+            Command::Signal(local_name, process) => {
+                let var = self.current().get_var(&Var::Name(subject.clone()), usage)?;
+                let new = self.current().define_var(Var::Name(subject.clone()));
+                let new = self.alloc(new);
+                let tgt = Global::Value(Value::Either(
+                    self.arena().intern(&local_name.string.as_str()),
+                    new,
+                ));
+                println!("Signal! {var:?} {tgt:?}");
+                self.current().link(var, tgt);
+                println!("{:?}", self.current().redexes);
+                self.compile_process(span, process)
+            }
+            Command::Case(local_names, items, else_branch) => {
+                let var = self
+                    .current()
+                    .get_var(&Var::Name(subject.clone()), &VariableUsage::Move)?;
+                let (context, pack_data) = self.current().pack();
+                println!("Context {:?}", context);
+                let mut branches = vec![];
+                let base_num_vars = self.current().num_vars;
+                println!("A {:?}", self.current().redexes);
+                let mut max_num_vars = base_num_vars;
+                for (name, proc) in local_names.iter().zip(items.iter()) {
+                    // TODO; this uses a different set of vars for each branch
+                    // but this is not necessary
+                    // and leads to increased compilation times
+                    self.push_current(base_num_vars);
+                    let name = self.arena().intern(name.string.as_str());
+
+                    let (c0, c1) = self.current().new_var();
+                    self.current().context = self.current().unpack(c0, &pack_data);
+                    let root = self.current().define_var(Var::Name(subject.clone()));
+                    self.compile_process(span, proc)?;
+                    let current = self.pop_current();
+                    let package = self.finalize_package(current, root, c1);
+                    branches.push((name, package.body));
+                    max_num_vars = max_num_vars.max(package.num_vars);
+                    //self.pop_current();
+                }
+                println!("D {:?}", self.current().redexes);
+                if let Some(else_branch) = else_branch {
+                    self.push_current(base_num_vars);
+                    self.current().num_vars = base_num_vars;
+                    let name = self.arena().empty_string();
+
+                    let (c0, c1) = self.current().new_var();
+                    self.current().context = self.current().unpack(c0, &pack_data);
+                    let root = self.current().define_var(Var::Name(subject.clone()));
+                    self.compile_process(span, &else_branch)?;
+
+                    let current = self.pop_current();
+                    let package = self.finalize_package(current, root, c1);
+                    branches.push((name, package.body));
+                    max_num_vars = max_num_vars.max(package.num_vars);
+                    //self.pop_current();
+                };
+                println!("B {:?}", self.current().redexes);
+                self.current().num_vars = max_num_vars;
+                let branches = self.alloc_clone(branches.as_ref());
+                let context = self.alloc(context);
+                println!("C {:?}", self.current().redexes);
+                self.current()
+                    .link(var, Global::Destruct(GlobalCont::Choice(context, branches)));
+                Ok(())
+            }
             Command::Break => {
-                let var = self.current.get_var(&Var::Name(subject.clone()), usage)?;
+                let var = self.current().get_var(&Var::Name(subject.clone()), usage)?;
                 let tgt = Global::Value(Value::Break);
-                self.current.link(var, tgt);
-                self.current.close_all_vars();
+                self.current().link(var, tgt);
+                self.current().close_all_vars();
                 Ok(())
             }
             Command::Continue(process) => {
-                let var = self.current.get_var(&Var::Name(subject.clone()), usage)?;
+                let var = self.current().get_var(&Var::Name(subject.clone()), usage)?;
                 let tgt = Global::Destruct(GlobalCont::Continue);
-                self.current.link(var, tgt);
+                self.current().link(var, tgt);
                 self.compile_process(span, process)?;
                 Ok(())
             }
@@ -340,7 +438,7 @@ impl Compiler {
                 then,
             } => {
                 let expr = self.compile_expression(span, &value)?;
-                self.current.context.insert(Var::Name(name.clone()), expr);
+                self.current().context.insert(Var::Name(name.clone()), expr);
                 self.compile_process(span, then)?;
                 Ok(())
             }
@@ -367,15 +465,15 @@ impl Compiler {
                 Ok(global)
             }
             Expression::Variable(span, local_name, _, variable_usage) => self
-                .current
+                .current()
                 .get_var(&Var::Name(local_name.clone()), variable_usage),
             Expression::Box(span, captures, expression, _) => {
                 let box_package = self.alloc(OnceLock::new());
 
-                let child_context = self.current.capture(captures)?;
-                let parent_context = core::mem::replace(&mut self.current.context, child_context);
-                let (captures_global, pack_data) = self.current.pack();
-                self.current.context = parent_context;
+                let child_context = self.current().capture(captures)?;
+                let parent_context = core::mem::replace(&mut self.current().context, child_context);
+                let (captures_global, pack_data) = self.current().pack();
+                self.current().context = parent_context;
                 let captures_global = self.alloc(captures_global);
 
                 self.box_queue.push((
@@ -397,12 +495,11 @@ impl Compiler {
                 expr_type,
                 process,
             } => {
-                let child_context = self.current.capture(captures)?;
-                let parent_context = core::mem::replace(&mut self.current.context, child_context);
-                let created_chan = self.current.define_var(Var::Name(chan_name.clone()));
+                let child_context = self.current().capture(captures)?;
+                let parent_context = core::mem::replace(&mut self.current().context, child_context);
+                let created_chan = self.current().define_var(Var::Name(chan_name.clone()));
                 self.compile_process(span, &process)?;
-                let (captures_global, pack_data) = self.current.pack();
-                self.current.context = parent_context;
+                self.current().context = parent_context;
                 Ok(created_chan)
             }
             Expression::Primitive(span, primitive, _) => {
@@ -411,10 +508,27 @@ impl Compiler {
             Expression::External(_, f, _) => Ok(Global::Value(Value::ExternalFn(*f))),
         }
     }
-    fn finalize_package(&mut self, root: Global, captures: Global) -> Package {
-        let (num_vars, redexes) = self.current.finalize();
-        self.current.arena.flush_to_temporary();
-        let arena = Arc::new(core::mem::take(&mut self.current.arena));
+    fn finalize_package(
+        &mut self,
+        mut current: PackageState,
+        root: Global,
+        captures: Global,
+    ) -> (Package) {
+        current.close_all_vars();
+        let num_vars = current.num_vars;
+        let redexes = current.redexes;
+        let mut arena = self.current().arena.take().unwrap();
+        arena.flush_to_temporary();
+        let arena = Arc::new(arena);
+        {
+            let mut shower = Shower::from_arena(&arena);
+            shower.deref_globals = true;
+            println!("Package:\n\t{}", Showable(&root, &shower));
+            println!("\t$ {}", Showable(&captures, &shower));
+            for (a, b) in &redexes {
+                println!("\t{} ~ {}", Showable(a, &shower), Showable(b, &shower));
+            }
+        }
         let mut runtime = Runtime::new(arena.clone());
         let instance = Instance::from_num_vars(num_vars);
         for (a, b) in redexes {
@@ -457,7 +571,7 @@ impl Compiler {
         arena.write = write;
         arena.flush_to_permanent();
         arena.reset_buffers();
-        self.current.arena = arena;
+        self.current().arena = Some(arena);
         package
     }
     fn compile_definitions(
@@ -468,29 +582,26 @@ impl Compiler {
             let p = self.alloc(OnceLock::new());
             self.definition_packages.insert(k.clone(), p);
         }
-        self.current.arena.flush_to_permanent();
-        self.current.arena.reset_buffers();
+        self.arena().flush_to_permanent();
+        self.arena().reset_buffers();
         for (k, (v, t)) in definitions.iter() {
+            self.push_current(0);
             let root = self.compile_expression(&v.span, &v.expression)?;
-            let package = self.finalize_package(root, Global::Destruct(GlobalCont::Continue));
+            let current = self.pop_current();
+            let package =
+                self.finalize_package(current, root, Global::Destruct(GlobalCont::Continue));
             let package_destination = self.definition_packages.get(k).unwrap();
-            self.current
-                .arena
-                .get(*package_destination)
-                .set(package)
-                .unwrap();
+            self.get(*package_destination).set(package).unwrap();
         }
         while let Some((package_destination, span, pack, root)) = self.box_queue.pop() {
-            let (a, b) = self.current.new_var();
-            let context = self.current.unpack(a, pack);
-            self.current.context = context;
+            self.push_current(0);
+            let (a, b) = self.current().new_var();
+            let context = self.current().unpack(a, &pack);
+            self.current().context = context;
             let root = self.compile_expression(&span, &root)?;
-            let package = self.finalize_package(root, b);
-            self.current
-                .arena
-                .get(package_destination)
-                .set(package)
-                .unwrap();
+            let current = self.pop_current();
+            let (package) = self.finalize_package(current, root, b);
+            self.get(package_destination).set(package).unwrap();
         }
         Ok(())
     }
@@ -498,6 +609,8 @@ impl Compiler {
 
 fn compile_file(program: &CheckedModule) -> Result<Compiler> {
     let mut compiler = Compiler::default();
+    compiler.push_current(0);
+    compiler.current().arena = Some(TripleArena::default());
     compiler.compile_definitions(&program.definitions)?;
     Ok(compiler)
 }
@@ -520,8 +633,8 @@ impl Compiled {
         module: &crate::par::program::CheckedModule,
     ) -> core::result::Result<Self, crate::runtime::RuntimeCompilerError> {
         let type_defs = module.type_defs.clone();
-        let compiler = compile_file(module).unwrap();
-        let mut arena = compiler.current.arena.permanent;
+        let mut compiler = compile_file(module).unwrap();
+        let mut arena = compiler.current().arena.take().unwrap().permanent;
         let mut closure = |ty: &Type| {
             fn helper(
                 ty: &Type,
@@ -543,6 +656,8 @@ impl Compiled {
         for (_, _, ty) in type_defs.clone().globals.values() {
             closure(ty).unwrap();
         }
+
+        println!("Code:\n{}\n// END CODE", arena);
 
         Ok(Self {
             arena: Arc::new(arena),

@@ -1,12 +1,14 @@
 use std::collections::HashMap;
 
+use indexmap::IndexMap;
+
 use crate::runtime::new::{
     arena::{Arena, Index, TripleArena},
-    runtime::{Global, GlobalCont, Instance, Linear, Node, Shared, Value},
+    runtime::{Global, GlobalCont, Instance, Linear, Node, PackageBody, Shared, Value},
 };
 
 pub struct Freezer<'a> {
-    variable_map: HashMap<(usize, usize), usize>,
+    variable_map: IndexMap<(usize, usize), usize>,
     pub write: &'a mut Arena,
     pub num_vars: usize,
 }
@@ -15,7 +17,7 @@ impl<'a> Freezer<'a> {
     pub fn new(write: &'a mut Arena) -> Self {
         Self {
             write,
-            variable_map: HashMap::new(),
+            variable_map: IndexMap::new(),
             num_vars: 0,
         }
     }
@@ -60,8 +62,50 @@ impl<'a> Freezer<'a> {
             Global::Package(index, index1, fan_behavior) => todo!(),
             Global::Destruct(global_cont) => match global_cont {
                 GlobalCont::Continue => Global::Destruct(GlobalCont::Continue),
-                GlobalCont::Par(index, index1) => todo!(),
-                GlobalCont::Choice(index, index1) => todo!(),
+                GlobalCont::Par(a, b) => {
+                    let a = self.freeze_global(read, instance, read.get(*a));
+                    let b = self.freeze_global(read, instance, read.get(*b));
+                    Global::Destruct(GlobalCont::Par(a, b))
+                }
+                GlobalCont::Choice(captures, branches) => {
+                    let captures = self.freeze_global(read, instance, read.get(*captures));
+                    let len = self.variable_map.len();
+
+                    let branches: Vec<_> = read
+                        .get(*branches)
+                        .into_iter()
+                        .map(|(name, package_body)| {
+                            self.variable_map.truncate(len);
+                            let name = self.write.intern(read.get(*name));
+                            let root =
+                                self.freeze_global(read, instance, read.get(package_body.root));
+                            let captures =
+                                self.freeze_global(read, instance, read.get(package_body.captures));
+                            let redexes: Vec<_> = read
+                                .get(package_body.redexes)
+                                .iter()
+                                .map(|(a, b)| {
+                                    let a = self.freeze_global(read, instance, read.get(*a));
+                                    let b = self.freeze_global(read, instance, read.get(*b));
+                                    (a, b)
+                                })
+                                .collect();
+                            let redexes = self.write.alloc_clone(redexes.as_ref());
+                            (
+                                name,
+                                PackageBody {
+                                    root,
+                                    captures,
+                                    redexes,
+                                    debug_name: package_body.debug_name.clone(),
+                                },
+                            )
+                        })
+                        .collect();
+                    let branches = self.write.alloc_clone(branches.as_ref());
+                    self.variable_map.truncate(len);
+                    Global::Destruct(GlobalCont::Choice(captures, branches))
+                }
             },
             Global::Value(value) => self.freeze_value(read, value, |this, read, p| {
                 let global = read.get(*p);
@@ -74,14 +118,14 @@ impl<'a> Freezer<'a> {
         r
     }
     pub fn freeze_node(&mut self, read: &TripleArena, node: &Node) -> Index<Global> {
-        let node = (match node {
+        let node = match node {
             Node::Linear(linear) => self.freeze_linear(read, linear),
             Node::Shared(shared) => self.freeze_shared(read, shared),
             Node::Global(instance, index) => {
                 let global = read.get(*index);
                 return self.freeze_global(read, instance, global);
             }
-        });
+        };
         self.write.alloc(node)
     }
 }

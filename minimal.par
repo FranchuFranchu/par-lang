@@ -1,1 +1,6 @@
-def Main: ! = !
+def Main: ! = chan user {
+    let value = .true!
+    value.case {
+        .true! => { user! }
+    }
+}

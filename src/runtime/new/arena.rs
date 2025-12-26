@@ -75,7 +75,7 @@ impl<T> ArenaSlots<T> {
     }
 }
 
-#[derive(Default)]
+#[derive(Default, Debug)]
 /// The `Arena` is a store for values from a finite set of types,
 /// and returns indices into the arena. Allocation is done using [`Arena::alloc`],
 /// and values can be accessed later with [`Arena::get`]
@@ -120,7 +120,8 @@ impl Arena {
         self.packages.append(&mut other.packages);
         self.redexes.append(&mut other.redexes);
         self.case_branches.append(&mut other.case_branches);
-        // TODO append strings
+        self.strings.push_str(&other.strings);
+        self.strings_intern.append(&mut other.strings_intern);
     }
     fn postfix_arena(&self) -> Arena {
         Self::initialize_with_slot_start(self.slots_end_indices())
@@ -361,7 +362,7 @@ impl<'a> ArenaLike for &'a Arena {
     }
 }
 
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub struct TripleArena {
     pub permanent: Arena,
     pub read: Arena,
