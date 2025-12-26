@@ -423,7 +423,6 @@ impl Compiler {
                 Node::Global(instance.clone(), b),
             );
         }
-        runtime.status();
         let redexes: Vec<_> = std::iter::from_fn(|| runtime.reduce())
             .map(|(a, b)| (Node::Linear(a.into()), b))
             .collect();
@@ -433,7 +432,6 @@ impl Compiler {
         let mut freezer = Freezer::new(&mut write);
         let root = freezer.freeze_global(&arena, &instance, &root);
         let captures = freezer.freeze_global(&arena, &instance, &captures);
-        println!("{:?} {:?} {:?}", root, captures, redexes);
         let redexes: Vec<_> = redexes
             .into_iter()
             .map(|(a, b)| {
@@ -456,7 +454,6 @@ impl Compiler {
                 redexes,
             },
         };
-        println!("{}", write);
         arena.write = write;
         arena.flush_to_permanent();
         arena.reset_buffers();
@@ -525,7 +522,6 @@ impl Compiled {
         let type_defs = module.type_defs.clone();
         let compiler = compile_file(module).unwrap();
         let mut arena = compiler.current.arena.permanent;
-        println!("Arena: {}", arena);
         let mut closure = |ty: &Type| {
             fn helper(
                 ty: &Type,

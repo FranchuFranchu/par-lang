@@ -42,7 +42,6 @@ impl<'a> Freezer<'a> {
         instance: &Instance,
         node: &Global,
     ) -> Index<Global> {
-        println!("Freezing {node:?}");
         let global = match node {
             Global::Variable(id) => {
                 let node = instance.at(id, |slot| slot.take());
@@ -75,7 +74,6 @@ impl<'a> Freezer<'a> {
         r
     }
     pub fn freeze_node(&mut self, read: &TripleArena, node: &Node) -> Index<Global> {
-        println!("Freezing {node:?}");
         let node = (match node {
             Node::Linear(linear) => self.freeze_linear(read, linear),
             Node::Shared(shared) => self.freeze_shared(read, shared),

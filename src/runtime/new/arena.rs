@@ -62,7 +62,6 @@ impl<T> ArenaSlots<T> {
     where
         T: Debug,
     {
-        println!("{:?} {:?}", self, other);
         assert!(other.start == self.end_index());
         self.inner.append(&mut other.inner);
         self.intern
