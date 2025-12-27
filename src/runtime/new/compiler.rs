@@ -44,6 +44,14 @@ macro_rules! err {
     };
 }
 
+macro_rules! tdb {
+    ($tab:expr, $fmt:expr, $($arg:tt)*) => {
+        eprintln!(concat!("{}", $fmt), " ".repeat($tab * 4), $($arg)*)
+    };
+    ($tab:expr, $fmt:expr) => {
+        eprintln!(concat!("{}", $fmt), " ".repeat($tab * 4))
+    };
+}
 #[derive(Clone, Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Var {
     Name(LocalName),
@@ -84,6 +92,7 @@ pub struct PackageState {
     context: Context,
     num_vars: usize,
     arena: Option<TripleArena>,
+    tab_level: usize,
     redexes: Vec<(Index<Global>, Index<Global>)>,
 }
 
@@ -170,7 +179,9 @@ impl PackageState {
     }
 
     pub fn link(&mut self, a: Global, b: Global) {
+        tdb!(self.tab_level + 1, "linking {:?} {:?}", &a, &b);
         let tup = (self.arena().alloc(a), self.arena().alloc(b));
+        tdb!(self.tab_level + 2, "-> {:?}", tup);
         self.redexes.push(tup);
     }
     pub fn new_var(&mut self) -> (Global, Global) {
@@ -251,16 +262,25 @@ pub struct Compiler {
 }
 
 impl Compiler {
+    pub fn enter(&mut self) {
+        self.current().tab_level += 1;
+    }
+    pub fn exit(&mut self) {
+        self.current().tab_level -= 1;
+    }
     pub fn push_current(&mut self, num_vars: usize) {
         let arena = self.current.last_mut().map(|x| x.arena.take()).flatten();
+        let tab_level = self.current.last_mut().map(|x| x.tab_level).unwrap_or(0);
         self.current.push(PackageState::default());
         self.current().num_vars = num_vars;
+        self.current().tab_level = tab_level;
         self.current().arena = arena;
     }
     pub fn pop_current(&mut self) -> PackageState {
         let arena = self.current().arena.take();
         let p = self.current.pop().unwrap();
         self.current().arena = arena;
+        self.current().tab_level = p.tab_level;
         p
     }
     pub fn current(&mut self) -> &mut PackageState {
@@ -314,29 +334,34 @@ impl Compiler {
     ) -> Result<()> {
         match cmd {
             Command::Link(expr) => {
+                tdb!(self.current().tab_level, "link {}", subject);
                 let var = self.current().get_var(&Var::Name(subject.clone()), usage)?;
                 let expr = self.compile_expression(span, expr)?;
                 self.current().link(var, expr);
                 self.current().close_all_vars();
-                Ok(())
             }
             Command::Send(expr, proc) => {
+                tdb!(self.current().tab_level, "send {}", subject);
+                self.enter();
                 let expr = self.compile_expression(span, expr)?;
+                self.exit();
                 let var = self.current().get_var(&Var::Name(subject.clone()), usage)?;
                 let new = self.current().define_var(Var::Name(subject.clone()));
                 let tgt = Global::Value(Value::Pair(self.alloc(new), self.alloc(expr)));
                 self.current().link(var, tgt);
-                self.compile_process(span, proc)
+                self.compile_process(span, proc)?;
             }
             Command::Receive(local_name, _, _, proc, _) => {
+                tdb!(self.current().tab_level, "recv {}", subject);
                 let var = self.current().get_var(&Var::Name(subject.clone()), usage)?;
                 let new = self.current().define_var(Var::Name(subject.clone()));
                 let arg = self.current().define_var(Var::Name(local_name.clone()));
                 let tgt = Global::Destruct(GlobalCont::Par(self.alloc(new), self.alloc(arg)));
                 self.current().link(var, tgt);
-                self.compile_process(span, proc)
+                self.compile_process(span, proc)?;
             }
             Command::Signal(local_name, process) => {
+                tdb!(self.current().tab_level, "signal {}", subject);
                 let var = self.current().get_var(&Var::Name(subject.clone()), usage)?;
                 let new = self.current().define_var(Var::Name(subject.clone()));
                 let new = self.alloc(new);
@@ -344,22 +369,20 @@ impl Compiler {
                     self.arena().intern(&local_name.string.as_str()),
                     new,
                 ));
-                println!("Signal! {var:?} {tgt:?}");
                 self.current().link(var, tgt);
-                println!("{:?}", self.current().redexes);
-                self.compile_process(span, process)
+                self.compile_process(span, process)?;
             }
             Command::Case(local_names, items, else_branch) => {
+                tdb!(self.current().tab_level, "case {}", subject);
                 let var = self
                     .current()
                     .get_var(&Var::Name(subject.clone()), &VariableUsage::Move)?;
                 let (context, pack_data) = self.current().pack();
-                println!("Context {:?}", context);
                 let mut branches = vec![];
                 let base_num_vars = self.current().num_vars;
-                println!("A {:?}", self.current().redexes);
                 let mut max_num_vars = base_num_vars;
                 for (name, proc) in local_names.iter().zip(items.iter()) {
+                    tdb!(self.current().tab_level, "branch {}", name);
                     // TODO; this uses a different set of vars for each branch
                     // but this is not necessary
                     // and leads to increased compilation times
@@ -369,15 +392,18 @@ impl Compiler {
                     let (c0, c1) = self.current().new_var();
                     self.current().context = self.current().unpack(c0, &pack_data);
                     let root = self.current().define_var(Var::Name(subject.clone()));
+
+                    self.enter();
                     self.compile_process(span, proc)?;
+                    self.exit();
                     let current = self.pop_current();
                     let package = self.finalize_package(current, root, c1);
                     branches.push((name, package.body));
                     max_num_vars = max_num_vars.max(package.num_vars);
                     //self.pop_current();
                 }
-                println!("D {:?}", self.current().redexes);
                 if let Some(else_branch) = else_branch {
+                    tdb!(self.current().tab_level, "else branch");
                     self.push_current(base_num_vars);
                     self.current().num_vars = base_num_vars;
                     let name = self.arena().empty_string();
@@ -385,7 +411,9 @@ impl Compiler {
                     let (c0, c1) = self.current().new_var();
                     self.current().context = self.current().unpack(c0, &pack_data);
                     let root = self.current().define_var(Var::Name(subject.clone()));
+                    self.enter();
                     self.compile_process(span, &else_branch)?;
+                    self.exit();
 
                     let current = self.pop_current();
                     let package = self.finalize_package(current, root, c1);
@@ -393,28 +421,25 @@ impl Compiler {
                     max_num_vars = max_num_vars.max(package.num_vars);
                     //self.pop_current();
                 };
-                println!("B {:?}", self.current().redexes);
                 self.current().num_vars = max_num_vars;
                 let branches = self.alloc_clone(branches.as_ref());
                 let context = self.alloc(context);
-                println!("C {:?}", self.current().redexes);
                 self.current()
                     .link(var, Global::Destruct(GlobalCont::Choice(context, branches)));
-                Ok(())
             }
             Command::Break => {
+                tdb!(self.current().tab_level, "break {}", subject);
                 let var = self.current().get_var(&Var::Name(subject.clone()), usage)?;
                 let tgt = Global::Value(Value::Break);
                 self.current().link(var, tgt);
                 self.current().close_all_vars();
-                Ok(())
             }
             Command::Continue(process) => {
+                tdb!(self.current().tab_level, "continue {}", subject);
                 let var = self.current().get_var(&Var::Name(subject.clone()), usage)?;
                 let tgt = Global::Destruct(GlobalCont::Continue);
                 self.current().link(var, tgt);
                 self.compile_process(span, process)?;
-                Ok(())
             }
             Command::Begin {
                 unfounded,
@@ -426,6 +451,7 @@ impl Compiler {
             Command::SendType(_, process) => todo!(),
             Command::ReceiveType(local_name, process) => todo!(),
         }
+        Ok(())
     }
     fn compile_process(&mut self, span: &Span, proc: &Process<Type>) -> Result<()> {
         match proc {
@@ -437,10 +463,12 @@ impl Compiler {
                 value,
                 then,
             } => {
+                tdb!(self.current().tab_level, "let {}", name);
+                self.enter();
                 let expr = self.compile_expression(span, &value)?;
+                self.exit();
                 self.current().context.insert(Var::Name(name.clone()), expr);
                 self.compile_process(span, then)?;
-                Ok(())
             }
             Process::Do {
                 span,
@@ -450,13 +478,13 @@ impl Compiler {
                 command,
             } => {
                 self.compile_command(span, name, usage, command)?;
-                Ok(())
             }
             Process::Telltypes(span, process) => todo!(),
             Process::Block(span, id, process, process1) => todo!(),
             Process::Goto(span, id, captures) => todo!(),
             Process::Unreachable(span) => todo!(),
-        }
+        };
+        Ok(())
     }
     fn compile_expression(&mut self, span: &Span, expr: &Expression<Type>) -> Result<Global> {
         match expr {
@@ -495,10 +523,13 @@ impl Compiler {
                 expr_type,
                 process,
             } => {
+                tdb!(self.current().tab_level, "chan {}", chan_name);
                 let child_context = self.current().capture(captures)?;
                 let parent_context = core::mem::replace(&mut self.current().context, child_context);
                 let created_chan = self.current().define_var(Var::Name(chan_name.clone()));
+                self.enter();
                 self.compile_process(span, &process)?;
+                self.exit();
                 self.current().context = parent_context;
                 Ok(created_chan)
             }
@@ -518,7 +549,9 @@ impl Compiler {
         let num_vars = current.num_vars;
         let redexes = current.redexes;
         let mut arena = self.current().arena.take().unwrap();
+        arena.show_ranges();
         arena.flush_to_temporary();
+        arena.show_ranges();
         let arena = Arc::new(arena);
         {
             let mut shower = Shower::from_arena(&arena);

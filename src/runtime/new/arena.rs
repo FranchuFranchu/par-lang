@@ -90,20 +90,41 @@ pub struct Arena {
     strings_intern: BTreeMap<String, Index<str>>,
 }
 
-type ArenaTrim = (usize, usize, usize, usize, usize);
+type ArenaTrim = [usize; 5];
 
 impl Arena {
+    fn names(&self) -> [&'static str; 5] {
+        ["nodes", "packages", "redexes", "case_branches", "strings"]
+    }
     fn slots_end_indices(&self) -> ArenaTrim {
-        (
+        [
             self.nodes.end_index(),
             self.packages.end_index(),
             self.redexes.end_index(),
             self.case_branches.end_index(),
             self.strings_start + self.strings.len(),
-        )
+        ]
+    }
+    fn slots_start_indices(&self) -> ArenaTrim {
+        [
+            self.nodes.start,
+            self.packages.start,
+            self.redexes.start,
+            self.case_branches.start,
+            self.strings_start,
+        ]
+    }
+    fn slots_lengths(&self) -> ArenaTrim {
+        [
+            self.nodes.inner.len(),
+            self.packages.inner.len(),
+            self.redexes.inner.len(),
+            self.case_branches.inner.len(),
+            self.strings.len(),
+        ]
     }
     fn initialize_with_slot_start(
-        (nodes, packages, redexes, case_branches, strings): ArenaTrim,
+        [nodes, packages, redexes, case_branches, strings]: ArenaTrim,
     ) -> Self {
         Arena {
             nodes: ArenaSlots::with_start(nodes),
@@ -113,6 +134,19 @@ impl Arena {
             strings_start: strings,
             ..Default::default()
         }
+    }
+    fn show_ranges(&self) -> String {
+        let mut out = String::new();
+        for ((start, len), name) in self
+            .slots_start_indices()
+            .iter()
+            .zip(self.slots_lengths().iter())
+            .zip(self.names().iter())
+        {
+            use std::fmt::Write;
+            write!(&mut out, "{name} {}..{}\t ", start, start + len).unwrap();
+        }
+        out
     }
 
     fn append(&mut self, other: &mut Arena) {
@@ -370,6 +404,14 @@ pub struct TripleArena {
 }
 
 impl TripleArena {
+    pub fn show_ranges(&self) {
+        println!(
+            "perma:\t{}\nread :\t{}\nwrite:\t{}\n",
+            self.permanent.show_ranges(),
+            self.read.show_ranges(),
+            self.write.show_ranges()
+        );
+    }
     pub fn get<T: Indexable + ?Sized>(&self, index: Index<T>) -> &T {
         if self.permanent.contains(index) {
             self.permanent.get(index)
