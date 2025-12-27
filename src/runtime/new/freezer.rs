@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use indexmap::IndexMap;
 
 use crate::runtime::new::{
-    arena::{Arena, Index, TripleArena},
+    arena::{Arena, ArenaTrim, Index, TripleArena},
     runtime::{Global, GlobalCont, Instance, Linear, Node, PackageBody, Shared, Value},
 };
 
@@ -11,14 +11,16 @@ pub struct Freezer<'a> {
     variable_map: IndexMap<(usize, usize), usize>,
     pub write: &'a mut Arena,
     pub num_vars: usize,
+    pub offset: ArenaTrim,
 }
 
 impl<'a> Freezer<'a> {
-    pub fn new(write: &'a mut Arena) -> Self {
+    pub fn new(read: &TripleArena, write: &'a mut Arena) -> Self {
         Self {
             write,
             variable_map: IndexMap::new(),
             num_vars: 0,
+            offset: read.permanent.slots_end_indices(),
         }
     }
     fn freeze_value<P>(

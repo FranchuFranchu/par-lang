@@ -12,6 +12,7 @@ use std::{
 };
 
 use indexmap::IndexMap;
+use tokio::time::Instant;
 
 use crate::{
     location::Span,
@@ -87,18 +88,30 @@ pub struct PackData {
     names: Vec<Var>,
 }
 
-#[derive(Default, Debug)]
+#[derive(Debug)]
 pub struct PackageState {
+    arena: Arena,
     context: Context,
     num_vars: usize,
-    arena: Option<TripleArena>,
     tab_level: usize,
     redexes: Vec<(Index<Global>, Index<Global>)>,
 }
 
+impl Default for PackageState {
+    fn default() -> Self {
+        Self {
+            arena: Arena::higher_half(),
+            context: Context::default(),
+            num_vars: usize::default(),
+            tab_level: usize::default(),
+            redexes: Vec::default(),
+        }
+    }
+}
+
 impl PackageState {
-    pub fn arena(&mut self) -> &mut TripleArena {
-        self.arena.as_mut().unwrap()
+    pub fn arena(&mut self) -> &mut Arena {
+        &mut self.arena
     }
     pub fn multiplex_trees(&mut self, mut trees: Vec<Global>) -> Global {
         if trees.len() == 0 {
@@ -255,6 +268,7 @@ type CompileBox = (PackagePtr, Span, PackData, Arc<Expression<Type>>);
 
 #[derive(Default)]
 pub struct Compiler {
+    permanent: Arena,
     current: Vec<PackageState>,
     box_queue: Vec<CompileBox>,
     type_defs: TypeDefs,
@@ -269,37 +283,33 @@ impl Compiler {
         self.current().tab_level -= 1;
     }
     pub fn push_current(&mut self, num_vars: usize) {
-        let arena = self.current.last_mut().map(|x| x.arena.take()).flatten();
         let tab_level = self.current.last_mut().map(|x| x.tab_level).unwrap_or(0);
         self.current.push(PackageState::default());
         self.current().num_vars = num_vars;
         self.current().tab_level = tab_level;
-        self.current().arena = arena;
     }
     pub fn pop_current(&mut self) -> PackageState {
-        let arena = self.current().arena.take();
         let p = self.current.pop().unwrap();
-        self.current().arena = arena;
         self.current().tab_level = p.tab_level;
         p
     }
     pub fn current(&mut self) -> &mut PackageState {
         self.current.last_mut().unwrap()
     }
-    pub fn arena(&mut self) -> &mut TripleArena {
+    pub fn write_arena(&mut self) -> &mut Arena {
         self.current().arena()
     }
-    pub fn arena_ref(&self) -> &TripleArena {
-        self.current.last().unwrap().arena.as_ref().unwrap()
+    pub fn read_arena(&self) -> &Arena {
+        &self.permanent
     }
     pub fn get<T: Indexable + ?Sized>(&self, index: Index<T>) -> &T {
-        self.arena_ref().get(index)
+        self.read_arena().get(index)
     }
     pub fn alloc<T: Indexable>(&mut self, data: T) -> Index<T> {
-        self.arena().alloc(data)
+        self.write_arena().alloc(data)
     }
     pub fn alloc_clone<T: Indexable + ?Sized>(&mut self, data: &T) -> Index<T> {
-        self.arena().alloc_clone(data)
+        self.write_arena().alloc_clone(data)
     }
 
     fn compile_global_name(&mut self, global_name: &GlobalName) -> Global {
@@ -310,9 +320,7 @@ impl Compiler {
                 self.current
                     .last_mut()
                     .unwrap()
-                    .arena
-                    .as_mut()
-                    .unwrap()
+                    .arena()
                     .alloc(OnceLock::<Package>::new())
             })
             .clone();
@@ -366,7 +374,7 @@ impl Compiler {
                 let new = self.current().define_var(Var::Name(subject.clone()));
                 let new = self.alloc(new);
                 let tgt = Global::Value(Value::Either(
-                    self.arena().intern(&local_name.string.as_str()),
+                    self.write_arena().intern(&local_name.string.as_str()),
                     new,
                 ));
                 self.current().link(var, tgt);
@@ -387,7 +395,7 @@ impl Compiler {
                     // but this is not necessary
                     // and leads to increased compilation times
                     self.push_current(base_num_vars);
-                    let name = self.arena().intern(name.string.as_str());
+                    let name = self.write_arena().intern(name.string.as_str());
 
                     let (c0, c1) = self.current().new_var();
                     self.current().context = self.current().unpack(c0, &pack_data);
@@ -406,7 +414,7 @@ impl Compiler {
                     tdb!(self.current().tab_level, "else branch");
                     self.push_current(base_num_vars);
                     self.current().num_vars = base_num_vars;
-                    let name = self.arena().empty_string();
+                    let name = self.write_arena().empty_string();
 
                     let (c0, c1) = self.current().new_var();
                     self.current().context = self.current().unpack(c0, &pack_data);
@@ -548,10 +556,13 @@ impl Compiler {
         current.close_all_vars();
         let num_vars = current.num_vars;
         let redexes = current.redexes;
-        let mut arena = self.current().arena.take().unwrap();
-        arena.show_ranges();
-        arena.flush_to_temporary();
-        arena.show_ranges();
+        let mut arena = current.arena;
+        let write_arena = self.permanent.postfix_arena();
+        let mut arena = TripleArena {
+            permanent: std::mem::take(&mut self.permanent),
+            read: arena,
+            write: write_arena,
+        };
         let arena = Arc::new(arena);
         {
             let mut shower = Shower::from_arena(&arena);
@@ -570,13 +581,18 @@ impl Compiler {
                 Node::Global(instance.clone(), b),
             );
         }
+        let mut t = Instant::now();
         let redexes: Vec<_> = std::iter::from_fn(|| runtime.reduce())
             .map(|(a, b)| (Node::Linear(a.into()), b))
             .collect();
+        println!(
+            "Pre-reduction rewrites:\n{}",
+            runtime.rewrites.show(t.elapsed())
+        );
         drop(runtime);
         let mut arena = Arc::into_inner(arena).unwrap();
         let mut write = core::mem::take(&mut arena.write);
-        let mut freezer = Freezer::new(&mut write);
+        let mut freezer = Freezer::new(&arena, &mut write);
         let root = freezer.freeze_global(&arena, &instance, &root);
         let captures = freezer.freeze_global(&arena, &instance, &captures);
         let redexes: Vec<_> = redexes
@@ -601,10 +617,9 @@ impl Compiler {
                 redexes,
             },
         };
-        arena.write = write;
-        arena.flush_to_permanent();
-        arena.reset_buffers();
-        self.current().arena = Some(arena);
+        let mut permanent = arena.permanent;
+        permanent.append(&mut write);
+        self.permanent = permanent;
         package
     }
     fn compile_definitions(
@@ -612,11 +627,9 @@ impl Compiler {
         definitions: &IndexMap<GlobalName, (Definition<Arc<Expression<Type>>>, Type)>,
     ) -> Result<()> {
         for (k, (v, t)) in definitions.iter() {
-            let p = self.alloc(OnceLock::new());
+            let p = self.permanent.alloc(OnceLock::new());
             self.definition_packages.insert(k.clone(), p);
         }
-        self.arena().flush_to_permanent();
-        self.arena().reset_buffers();
         for (k, (v, t)) in definitions.iter() {
             self.push_current(0);
             let root = self.compile_expression(&v.span, &v.expression)?;
@@ -643,7 +656,6 @@ impl Compiler {
 fn compile_file(program: &CheckedModule) -> Result<Compiler> {
     let mut compiler = Compiler::default();
     compiler.push_current(0);
-    compiler.current().arena = Some(TripleArena::default());
     compiler.compile_definitions(&program.definitions)?;
     Ok(compiler)
 }
@@ -667,7 +679,7 @@ impl Compiled {
     ) -> core::result::Result<Self, crate::runtime::RuntimeCompilerError> {
         let type_defs = module.type_defs.clone();
         let mut compiler = compile_file(module).unwrap();
-        let mut arena = compiler.current().arena.take().unwrap().permanent;
+        let mut arena = compiler.permanent;
         let mut closure = |ty: &Type| {
             fn helper(
                 ty: &Type,

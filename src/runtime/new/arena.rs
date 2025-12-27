@@ -1,5 +1,5 @@
 use std::collections::{BTreeMap, HashMap};
-use std::fmt::Debug;
+use std::fmt::{Debug, Display};
 use std::sync::OnceLock;
 
 use crate::runtime::new::{
@@ -8,6 +8,8 @@ use crate::runtime::new::{
 };
 
 use super::runtime::{Global, Package};
+
+pub const HIGHER_HALF: usize = usize::MAX / 2 + 1;
 
 #[derive(Debug)]
 struct ArenaSlots<T> {
@@ -33,7 +35,11 @@ impl<T> ArenaSlots<T> {
         &self.inner[index - self.start]
     }
     fn get_slice(&self, index: usize, length: usize) -> &[T] {
-        &self.inner[index - self.start..index - self.start + length]
+        if length == 0 {
+            &self.inner[0..0]
+        } else {
+            &self.inner[index - self.start..index - self.start + length]
+        }
     }
     fn alloc_one(&mut self, data: T) -> usize {
         let index = self.inner.len() + self.start;
@@ -90,13 +96,13 @@ pub struct Arena {
     strings_intern: BTreeMap<String, Index<str>>,
 }
 
-type ArenaTrim = [usize; 5];
+pub type ArenaTrim = [usize; 5];
 
 impl Arena {
     fn names(&self) -> [&'static str; 5] {
         ["nodes", "packages", "redexes", "case_branches", "strings"]
     }
-    fn slots_end_indices(&self) -> ArenaTrim {
+    pub fn slots_end_indices(&self) -> ArenaTrim {
         [
             self.nodes.end_index(),
             self.packages.end_index(),
@@ -149,7 +155,7 @@ impl Arena {
         out
     }
 
-    fn append(&mut self, other: &mut Arena) {
+    pub fn append(&mut self, other: &mut Arena) {
         self.nodes.append(&mut other.nodes);
         self.packages.append(&mut other.packages);
         self.redexes.append(&mut other.redexes);
@@ -157,8 +163,11 @@ impl Arena {
         self.strings.push_str(&other.strings);
         self.strings_intern.append(&mut other.strings_intern);
     }
-    fn postfix_arena(&self) -> Arena {
+    pub fn postfix_arena(&self) -> Arena {
         Self::initialize_with_slot_start(self.slots_end_indices())
+    }
+    pub fn higher_half() -> Arena {
+        Self::initialize_with_slot_start([HIGHER_HALF; 5])
     }
 
     /// Get a reference
@@ -251,10 +260,13 @@ pub trait Indexable {
     fn alloc_clone<'s>(_: &'s mut Arena, _: &Self) -> Index<Self> {
         todo!() //Self::alloc(data.clone())
     }
+    fn shift(index: &mut Index<Self>, offset: usize);
+    fn is_higher_half(index: &Index<Self>) -> bool;
+    fn arena_trim_index() -> usize;
 }
 
 macro_rules! slice_indexable {
-    ($field:ident, $element:ty) => {
+    ($field:ident, $element:ty, $idx:expr) => {
         impl Indexable for [$element] {
             type Store = (usize, usize);
             fn get<'s>(store: &'s Arena, index: Index<Self>) -> &'s Self {
@@ -265,6 +277,16 @@ macro_rules! slice_indexable {
             }
             fn contains<'s>(store: &'s Arena, index: Index<Self>) -> bool {
                 store.$field.contains_range(index.0 .0, index.0 .1)
+            }
+
+            fn shift(index: &mut Index<Self>, offset: usize) {
+                index.0 .0 = index.0 .0.wrapping_add(offset);
+            }
+            fn arena_trim_index() -> usize {
+                $idx
+            }
+            fn is_higher_half(index: &Index<Self>) -> bool {
+                index.0 .0 >= HIGHER_HALF
             }
         }
         impl Iterator for Index<[$element]> {
@@ -280,10 +302,17 @@ macro_rules! slice_indexable {
                 }
             }
         }
+
+        impl Debug for Index<[$element]> {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                let (start, end) = (IndexAddr(self.0 .0), IndexAddr(self.0 .0 + self.0 .1));
+                write!(f, "{:?}..{:?}", start, end)
+            }
+        }
     };
 }
 macro_rules! sized_indexable {
-    ($field:ident, $element:ty) => {
+    ($field:ident, $element:ty, $idx:expr) => {
         impl Indexable for $element {
             type Store = usize;
             fn get<'s>(store: &'s Arena, index: Index<Self>) -> &'s Self {
@@ -295,16 +324,31 @@ macro_rules! sized_indexable {
             fn contains<'s>(store: &'s Arena, index: Index<Self>) -> bool {
                 store.$field.contains(index.0)
             }
+            fn shift(index: &mut Index<Self>, offset: usize) {
+                index.0 = index.0.wrapping_add(offset);
+            }
+            fn arena_trim_index() -> usize {
+                $idx
+            }
+            fn is_higher_half(index: &Index<Self>) -> bool {
+                index.0 >= HIGHER_HALF
+            }
+        }
+
+        impl Debug for Index<$element> {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                <IndexAddr as Display>::fmt(&IndexAddr(self.0), f)
+            }
         }
     };
 }
-slice_indexable!(case_branches, (Index<str>, PackageBody));
-slice_indexable!(nodes, Global);
-slice_indexable!(redexes, (Index<Global>, Index<Global>));
-sized_indexable!(redexes, (Index<Global>, Index<Global>));
-sized_indexable!(case_branches, (Index<str>, PackageBody));
-sized_indexable!(packages, OnceLock<Package>);
-sized_indexable!(nodes, Global);
+slice_indexable!(case_branches, (Index<str>, PackageBody), 3);
+slice_indexable!(nodes, Global, 0);
+slice_indexable!(redexes, (Index<Global>, Index<Global>), 2);
+sized_indexable!(redexes, (Index<Global>, Index<Global>), 2);
+sized_indexable!(case_branches, (Index<str>, PackageBody), 3);
+sized_indexable!(packages, OnceLock<Package>, 1);
+sized_indexable!(nodes, Global, 0);
 
 impl Indexable for str {
     type Store = (usize, usize);
@@ -324,8 +368,24 @@ impl Indexable for str {
         contains_inner(store, index.0 .0)
             && (index.0 .1 == 0 || contains_inner(store, index.0 .0 + index.0 .1 - 1))
     }
+
+    fn shift(index: &mut Index<Self>, offset: usize) {
+        index.0 .0 = index.0 .0.wrapping_add(offset);
+    }
+    fn arena_trim_index() -> usize {
+        4
+    }
+    fn is_higher_half(index: &Index<Self>) -> bool {
+        index.0 .0 >= HIGHER_HALF
+    }
 }
 
+impl Debug for Index<str> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let (start, end) = (IndexAddr(self.0 .0), IndexAddr(self.0 .0 + self.0 .1));
+        write!(f, "{:?}..{:?}", start, end)
+    }
+}
 impl<T: Indexable + ?Sized> Clone for Index<T>
 where
     T::Store: Clone,
@@ -334,15 +394,6 @@ where
         Self(self.0.clone())
     }
 }
-impl<T: Indexable + ?Sized> Debug for Index<T>
-where
-    T::Store: Debug,
-{
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.0.fmt(f)
-    }
-}
-
 impl<T: Indexable + ?Sized> PartialEq for Index<T>
 where
     T::Store: PartialEq,
@@ -445,13 +496,12 @@ impl TripleArena {
     }
     pub fn flush_to_temporary(&mut self) {
         self.read.append(&mut self.write);
+        self.write = self.permanent.postfix_arena();
     }
     pub fn flush_to_permanent(&mut self) {
         self.permanent.append(&mut self.write);
-    }
-    pub fn reset_buffers(&mut self) {
-        self.write = self.permanent.postfix_arena();
-        self.read = self.permanent.postfix_arena();
+        self.write = Arena::higher_half();
+        self.read = Arena::higher_half();
     }
 }
 
@@ -462,5 +512,29 @@ impl ArenaLike for Arc<TripleArena> {
 
     fn empty_string(&self) -> Index<str> {
         TripleArena::empty_string(&self)
+    }
+}
+
+impl<T: Indexable> Index<T> {
+    pub fn shift_by_and_move_to_lower_half(&mut self, trim: &ArenaTrim) {
+        T::shift(self, trim[T::arena_trim_index()].wrapping_add(HIGHER_HALF));
+    }
+}
+
+pub struct IndexAddr(usize);
+
+impl std::fmt::Display for IndexAddr {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.0 >= HIGHER_HALF {
+            write!(f, "H{}", self.0 - HIGHER_HALF)
+        } else {
+            write!(f, "L{}", self.0)
+        }
+    }
+}
+
+impl std::fmt::Debug for IndexAddr {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        <IndexAddr as Display>::fmt(&self, f)
     }
 }

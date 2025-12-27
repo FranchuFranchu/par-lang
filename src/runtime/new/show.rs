@@ -106,7 +106,6 @@ impl<'a, 'b, A: ArenaLike> std::fmt::Display for Showable<'a, 'b, &'a SyncShared
 
 impl<'a, 'b, A: ArenaLike> std::fmt::Display for Showable<'a, 'b, &'a Global, A> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        eprintln!("{:?}", self.0);
         match self.0 {
             Global::Variable(id) => {
                 write!(f, "{}", id)?;
