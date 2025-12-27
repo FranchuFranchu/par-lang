@@ -5,8 +5,7 @@
 // - Definitions
 
 use std::{
-    cell::OnceCell,
-    collections::{BTreeSet, HashMap},
+    collections::HashMap,
     fmt::Display,
     sync::{Arc, OnceLock},
 };
@@ -158,7 +157,7 @@ impl PackageState {
                 target.insert(k.clone(), global);
             } else if do_captures && !do_duplicate {
                 let global = self.add_var_destination(&k)?;
-                self.close_var(&k);
+                self.close_var(&k)?;
                 target.insert(k.clone(), global);
             };
         }
@@ -186,9 +185,6 @@ impl PackageState {
         let dest = self.demultiplex_trees(trees);
         self.link(global, dest);
         context
-    }
-    fn set_context(&mut self, context: Context) {
-        self.context = context;
     }
 
     pub fn link(&mut self, a: Global, b: Global) {
@@ -235,23 +231,16 @@ impl PackageState {
         }
     }
     fn close_var(&mut self, var: &Var) -> Result<()> {
-        let mut var = self.context.vars.remove(var);
+        let var = self.context.vars.remove(var);
         if let Some(var) = var {
             self.close_var_inner(var);
         }
         Ok(())
     }
     fn close_all_vars(&mut self) {
-        for (name, var) in core::mem::take(&mut self.context.vars) {
+        for var in core::mem::take(&mut self.context.vars).into_values() {
             self.close_var_inner(var);
         }
-    }
-    fn finalize(&mut self) -> (usize, Vec<(Index<Global>, Index<Global>)>) {
-        self.close_all_vars();
-        (
-            core::mem::replace(&mut self.num_vars, 0),
-            core::mem::take(&mut self.redexes),
-        )
     }
     pub fn get_var(&mut self, var: &Var, usage: &VariableUsage) -> Result<Global> {
         if matches!(usage, VariableUsage::Copy) {
@@ -556,9 +545,9 @@ impl Compiler {
         current.close_all_vars();
         let num_vars = current.num_vars;
         let redexes = current.redexes;
-        let mut arena = current.arena;
+        let arena = current.arena;
         let write_arena = self.permanent.postfix_arena();
-        let mut arena = TripleArena {
+        let arena = TripleArena {
             permanent: std::mem::take(&mut self.permanent),
             read: arena,
             write: write_arena,
@@ -626,11 +615,11 @@ impl Compiler {
         &mut self,
         definitions: &IndexMap<GlobalName, (Definition<Arc<Expression<Type>>>, Type)>,
     ) -> Result<()> {
-        for (k, (v, t)) in definitions.iter() {
+        for (k, (v, _type)) in definitions.iter() {
             let p = self.permanent.alloc(OnceLock::new());
             self.definition_packages.insert(k.clone(), p);
         }
-        for (k, (v, t)) in definitions.iter() {
+        for (k, (v, _type)) in definitions.iter() {
             self.push_current(0);
             let root = self.compile_expression(&v.span, &v.expression)?;
             let current = self.pop_current();
@@ -646,7 +635,7 @@ impl Compiler {
             self.current().context = context;
             let root = self.compile_expression(&span, &root)?;
             let current = self.pop_current();
-            let (package) = self.finalize_package(current, root, b);
+            let package = self.finalize_package(current, root, b);
             self.get(package_destination).set(package).unwrap();
         }
         Ok(())
