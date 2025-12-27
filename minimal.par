@@ -1,6 +1,11 @@
 def Main: ! = chan user {
-    let value = .true!
-    value.case {
-        .true! => { user! }
+    let a = .true!
+    let b = a
+    a.case {
+        .true! => {
+            b.case {
+                .true! => { user! }
+            }
+        }
     }
 }

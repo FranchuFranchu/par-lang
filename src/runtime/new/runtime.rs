@@ -795,7 +795,10 @@ impl<A: ArenaLike> Runtime<A> {
                                 self.lookup_case_branch(options, self.arena.empty_string());
                             let root = self.instantiate_package_body_captures(
                                 instance.clone(),
-                                &branch.unwrap(),
+                                &branch.unwrap_or_else(|| {
+                                    panic!("Did not find a matching branch!\nSignal: {signal:?}\nOptions:{:?}", self.arena.get(options))
+
+                                }),
                                 Node::Global(instance, context),
                             );
                             // TODO: Optimize this; we're reconstructing the `Either` branch.

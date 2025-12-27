@@ -163,8 +163,12 @@ impl PackageState {
         }
         Ok(target)
     }
-    fn pack(&mut self) -> (Global, PackData) {
-        let vars = core::mem::take(&mut self.context.vars);
+    fn pack_self(&mut self) -> (Global, PackData) {
+        let cx = core::mem::take(&mut self.context);
+        self.pack(cx)
+    }
+    fn pack(&mut self, mut context: Context) -> (Global, PackData) {
+        let vars = core::mem::take(&mut context.vars);
         let mut pack_data = PackData::default();
         let mut trees = vec![];
         for (k, mut v) in vars {
@@ -173,6 +177,9 @@ impl PackageState {
             pack_data.names.push(k);
         }
         (self.multiplex_trees(trees), pack_data)
+    }
+    fn unpack_self(&mut self, global: Global, pack: &PackData) {
+        self.context = self.unpack(global, pack)
     }
     fn unpack(&mut self, global: Global, pack: &PackData) -> Context {
         let mut context = Context::default();
@@ -259,7 +266,6 @@ type CompileBox = (PackagePtr, Span, PackData, Arc<Expression<Type>>);
 pub struct Compiler {
     permanent: Arena,
     current: Vec<PackageState>,
-    box_queue: Vec<CompileBox>,
     type_defs: TypeDefs,
     definition_packages: HashMap<GlobalName, Index<OnceLock<Package>>>,
 }
@@ -290,6 +296,13 @@ impl Compiler {
     }
     pub fn read_arena(&self) -> &Arena {
         &self.permanent
+    }
+    pub fn intern(&mut self, s: &str) -> Index<str> {
+        // TODO: This unnecessarily interns strings that are unused in the final net.
+        self.permanent.intern(s)
+    }
+    pub fn empty_string(&self,) -> Index<str> {
+        self.permanent.empty_string()
     }
     pub fn get<T: Indexable + ?Sized>(&self, index: Index<T>) -> &T {
         self.read_arena().get(index)
@@ -363,7 +376,7 @@ impl Compiler {
                 let new = self.current().define_var(Var::Name(subject.clone()));
                 let new = self.alloc(new);
                 let tgt = Global::Value(Value::Either(
-                    self.write_arena().intern(&local_name.string.as_str()),
+                    self.intern(&local_name.string.as_str()),
                     new,
                 ));
                 self.current().link(var, tgt);
@@ -374,7 +387,7 @@ impl Compiler {
                 let var = self
                     .current()
                     .get_var(&Var::Name(subject.clone()), &VariableUsage::Move)?;
-                let (context, pack_data) = self.current().pack();
+                let (context, pack_data) = self.current().pack_self();
                 let mut branches = vec![];
                 let base_num_vars = self.current().num_vars;
                 let mut max_num_vars = base_num_vars;
@@ -384,17 +397,17 @@ impl Compiler {
                     // but this is not necessary
                     // and leads to increased compilation times
                     self.push_current(base_num_vars);
-                    let name = self.write_arena().intern(name.string.as_str());
+                    let name = self.intern(name.string.as_str());
 
                     let (c0, c1) = self.current().new_var();
-                    self.current().context = self.current().unpack(c0, &pack_data);
+                    self.current().unpack_self(c0, &pack_data);
                     let root = self.current().define_var(Var::Name(subject.clone()));
 
                     self.enter();
                     self.compile_process(span, proc)?;
                     self.exit();
                     let current = self.pop_current();
-                    let package = self.finalize_package(current, root, c1);
+                    let package = self.finalize_package(current, root, c1, base_num_vars);
                     branches.push((name, package.body));
                     max_num_vars = max_num_vars.max(package.num_vars);
                     //self.pop_current();
@@ -403,17 +416,17 @@ impl Compiler {
                     tdb!(self.current().tab_level, "else branch");
                     self.push_current(base_num_vars);
                     self.current().num_vars = base_num_vars;
-                    let name = self.write_arena().empty_string();
+                    let name = self.empty_string();
 
                     let (c0, c1) = self.current().new_var();
-                    self.current().context = self.current().unpack(c0, &pack_data);
+                    self.current().unpack_self(c0, &pack_data);
                     let root = self.current().define_var(Var::Name(subject.clone()));
                     self.enter();
                     self.compile_process(span, &else_branch)?;
                     self.exit();
 
                     let current = self.pop_current();
-                    let package = self.finalize_package(current, root, c1);
+                    let package = self.finalize_package(current, root, c1, base_num_vars);
                     branches.push((name, package.body));
                     max_num_vars = max_num_vars.max(package.num_vars);
                     //self.pop_current();
@@ -492,21 +505,22 @@ impl Compiler {
             Expression::Variable(span, local_name, _, variable_usage) => self
                 .current()
                 .get_var(&Var::Name(local_name.clone()), variable_usage),
-            Expression::Box(span, captures, expression, _) => {
+            Expression::Box(span, captures, root, _) => {
                 let box_package = self.alloc(OnceLock::new());
 
                 let child_context = self.current().capture(captures)?;
-                let parent_context = core::mem::replace(&mut self.current().context, child_context);
-                let (captures_global, pack_data) = self.current().pack();
-                self.current().context = parent_context;
+                let (captures_global, pack) = self.current().pack(child_context);
                 let captures_global = self.alloc(captures_global);
 
-                self.box_queue.push((
-                    box_package.clone(),
-                    span.clone(),
-                    pack_data,
-                    expression.clone(),
-                ));
+                self.push_current(0);
+                let (a, b) = self.current().new_var();
+                self.current().unpack_self(a, &pack);
+                let root = self.compile_expression(&span, &root)?;
+
+                let current = self.pop_current();
+                let package = self.finalize_package(current, root, b, 0);
+                self.get(box_package).set(package).unwrap();
+
                 let global = Global::Package(box_package, captures_global, FanBehavior::Propagate);
                 // Pass the captures to the queue
                 Ok(global)
@@ -541,7 +555,8 @@ impl Compiler {
         mut current: PackageState,
         root: Global,
         captures: Global,
-    ) -> (Package) {
+        num_vars: usize,
+    ) -> Package {
         current.close_all_vars();
         let num_vars = current.num_vars;
         let redexes = current.redexes;
@@ -582,6 +597,7 @@ impl Compiler {
         let mut arena = Arc::into_inner(arena).unwrap();
         let mut write = core::mem::take(&mut arena.write);
         let mut freezer = Freezer::new(&arena, &mut write);
+        freezer.num_vars = num_vars;
         let root = freezer.freeze_global(&arena, &instance, &root);
         let captures = freezer.freeze_global(&arena, &instance, &captures);
         let redexes: Vec<_> = redexes
@@ -624,19 +640,9 @@ impl Compiler {
             let root = self.compile_expression(&v.span, &v.expression)?;
             let current = self.pop_current();
             let package =
-                self.finalize_package(current, root, Global::Destruct(GlobalCont::Continue));
+                self.finalize_package(current, root, Global::Destruct(GlobalCont::Continue), 0);
             let package_destination = self.definition_packages.get(k).unwrap();
             self.get(*package_destination).set(package).unwrap();
-        }
-        while let Some((package_destination, span, pack, root)) = self.box_queue.pop() {
-            self.push_current(0);
-            let (a, b) = self.current().new_var();
-            let context = self.current().unpack(a, &pack);
-            self.current().context = context;
-            let root = self.compile_expression(&span, &root)?;
-            let current = self.pop_current();
-            let package = self.finalize_package(current, root, b);
-            self.get(package_destination).set(package).unwrap();
         }
         Ok(())
     }

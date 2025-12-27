@@ -21,6 +21,13 @@ impl<'a> Freezer<'a> {
             offset: read.permanent.slots_end_indices(),
         }
     }
+    fn intern(&mut self, read: &TripleArena, s: &str) -> Index<str> {
+        if let Some(s) = read.interned(s) {
+            s
+        } else {
+            self.write.intern(s)
+        }
+    }
     fn freeze_value<P>(
         &mut self,
         read: &TripleArena,
@@ -76,7 +83,7 @@ impl<'a> Freezer<'a> {
                         .into_iter()
                         .map(|(name, package_body)| {
                             self.variable_map.truncate(len);
-                            let name = self.write.intern(read.get(*name));
+                            let name = self.intern(read, read.get(*name));
                             let root =
                                 self.freeze_global(read, instance, read.get(package_body.root));
                             let captures =
