@@ -260,8 +260,6 @@ impl PackageState {
     }
 }
 
-type CompileBox = (PackagePtr, Span, PackData, Arc<Expression<Type>>);
-
 #[derive(Default)]
 pub struct Compiler {
     permanent: Arena,
@@ -506,7 +504,7 @@ impl Compiler {
                 .current()
                 .get_var(&Var::Name(local_name.clone()), variable_usage),
             Expression::Box(span, captures, root, _) => {
-                let box_package = self.alloc(OnceLock::new());
+                tdb!(self.current().tab_level, "box {:?}", captures);
 
                 let child_context = self.current().capture(captures)?;
                 let (captures_global, pack) = self.current().pack(child_context);
@@ -519,10 +517,10 @@ impl Compiler {
 
                 let current = self.pop_current();
                 let package = self.finalize_package(current, root, b, 0);
-                self.get(box_package).set(package).unwrap();
+                let package = OnceLock::from(package);
+                let package = self.alloc(package);
 
-                let global = Global::Package(box_package, captures_global, FanBehavior::Propagate);
-                // Pass the captures to the queue
+                let global = Global::Package(package, captures_global, FanBehavior::Propagate);
                 Ok(global)
             }
             Expression::Chan {

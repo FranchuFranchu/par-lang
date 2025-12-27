@@ -1,5 +1,5 @@
 def Main: ! = chan user {
-    let a = .true!
+    let a = box .true!
     let b = a
     a.case {
         .true! => {
