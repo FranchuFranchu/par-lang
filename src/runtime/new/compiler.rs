@@ -46,10 +46,10 @@ macro_rules! err {
 
 macro_rules! tdb {
     ($tab:expr, $fmt:expr, $($arg:tt)*) => {
-        eprintln!(concat!("{}", $fmt), " ".repeat($tab * 4), $($arg)*)
+        () //eprintln!(concat!("{}", $fmt), " ".repeat($tab * 4), $($arg)*)
     };
     ($tab:expr, $fmt:expr) => {
-        eprintln!(concat!("{}", $fmt), " ".repeat($tab * 4))
+        () //eprintln!(concat!("{}", $fmt), " ".repeat($tab * 4))
     };
 }
 #[derive(Clone, Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]
@@ -80,6 +80,14 @@ impl Context {
             },
         );
     }
+    fn pack_shape(&self) -> PackData {
+        PackData {
+            names: self.vars.keys().cloned().collect(),
+        }
+    }
+    fn append(&mut self, cx: &mut Context) {
+        self.vars.extend(cx.vars.drain());
+    }
 }
 
 #[derive(Default, Debug, Clone)]
@@ -94,6 +102,7 @@ pub struct PackageState {
     num_vars: usize,
     tab_level: usize,
     redexes: Vec<(Index<Global>, Index<Global>)>,
+    loop_points: IndexMap<Option<LocalName>, PackData>,
 }
 
 impl Default for PackageState {
@@ -104,6 +113,7 @@ impl Default for PackageState {
             num_vars: usize::default(),
             tab_level: usize::default(),
             redexes: Vec::default(),
+            loop_points: Default::default(),
         }
     }
 }
@@ -130,7 +140,10 @@ impl PackageState {
             trees.pop().unwrap()
         } else {
             let new_trees = trees.split_off(trees.len() / 2);
-            let (a, b) = (self.multiplex_trees(trees), self.multiplex_trees(new_trees));
+            let (a, b) = (
+                self.demultiplex_trees(trees),
+                self.demultiplex_trees(new_trees),
+            );
             Global::Destruct(GlobalCont::Par(
                 self.arena().alloc(a),
                 self.arena().alloc(b),
@@ -167,19 +180,25 @@ impl PackageState {
         let cx = core::mem::take(&mut self.context);
         self.pack(cx)
     }
-    fn pack(&mut self, mut context: Context) -> (Global, PackData) {
-        let vars = core::mem::take(&mut context.vars);
-        let mut pack_data = PackData::default();
+    fn pack(&mut self, context: Context) -> (Global, PackData) {
+        let shp = context.pack_shape();
+        (self.pack_with_shape(context, &shp), shp)
+    }
+    fn pack_with_shape(&mut self, mut context: Context, shape: &PackData) -> Global {
         let mut trees = vec![];
-        for (k, mut v) in vars {
+        for k in &shape.names {
+            let mut v = context
+                .vars
+                .remove(&k)
+                .unwrap_or_else(|| panic!("Attempted to pack {:?} but it was not present", k));
             trees.push(self.add_var_destination_inplace(&mut v));
             self.close_var_inner(v);
-            pack_data.names.push(k);
         }
-        (self.multiplex_trees(trees), pack_data)
+        self.multiplex_trees(trees)
     }
     fn unpack_self(&mut self, global: Global, pack: &PackData) {
-        self.context = self.unpack(global, pack)
+        let mut cx_e = self.unpack(global, pack);
+        self.context.append(&mut cx_e);
     }
     fn unpack(&mut self, global: Global, pack: &PackData) -> Context {
         let mut context = Context::default();
@@ -213,6 +232,10 @@ impl PackageState {
         let (a, b) = self.new_var();
         self.context.insert(name, a);
         b
+    }
+    pub fn define_var_known(&mut self, name: Var, g: Global) {
+        let _ = self.close_var(&name);
+        self.context.insert(name, g);
     }
     fn add_var_destination(&mut self, var: &Var) -> Result<Global> {
         let (a, b) = self.new_var();
@@ -258,6 +281,21 @@ impl PackageState {
             Ok(ret)
         }
     }
+    fn show(&self) {
+        use std::fmt::Display;
+        let s = self
+            .context
+            .vars
+            .keys()
+            .map(|x| match x {
+                Var::Loop(None) => format!("@"),
+                Var::Loop(Some(x)) => format!("@{x}"),
+                Var::Name(x) => format!("{x}"),
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
+        tdb!(self.tab_level + 1, "ctx: {}", s)
+    }
 }
 
 #[derive(Default)]
@@ -266,6 +304,7 @@ pub struct Compiler {
     current: Vec<PackageState>,
     type_defs: TypeDefs,
     definition_packages: HashMap<GlobalName, Index<OnceLock<Package>>>,
+    blocks: IndexMap<usize, Arc<Process<Type>>>,
 }
 
 impl Compiler {
@@ -277,7 +316,13 @@ impl Compiler {
     }
     pub fn push_current(&mut self, num_vars: usize) {
         let tab_level = self.current.last_mut().map(|x| x.tab_level).unwrap_or(0);
+        let loops = self
+            .current
+            .last_mut()
+            .map(|x| x.loop_points.clone())
+            .unwrap_or_default();
         self.current.push(PackageState::default());
+        self.current().loop_points = loops;
         self.current().num_vars = num_vars;
         self.current().tab_level = tab_level;
     }
@@ -287,6 +332,7 @@ impl Compiler {
         p
     }
     pub fn current(&mut self) -> &mut PackageState {
+        self.current.last_mut().unwrap().show();
         self.current.last_mut().unwrap()
     }
     pub fn write_arena(&mut self) -> &mut Arena {
@@ -299,7 +345,7 @@ impl Compiler {
         // TODO: This unnecessarily interns strings that are unused in the final net.
         self.permanent.intern(s)
     }
-    pub fn empty_string(&self,) -> Index<str> {
+    pub fn empty_string(&self) -> Index<str> {
         self.permanent.empty_string()
     }
     pub fn get<T: Indexable + ?Sized>(&self, index: Index<T>) -> &T {
@@ -373,10 +419,8 @@ impl Compiler {
                 let var = self.current().get_var(&Var::Name(subject.clone()), usage)?;
                 let new = self.current().define_var(Var::Name(subject.clone()));
                 let new = self.alloc(new);
-                let tgt = Global::Value(Value::Either(
-                    self.intern(&local_name.string.as_str()),
-                    new,
-                ));
+                let tgt =
+                    Global::Value(Value::Either(self.intern(&local_name.string.as_str()), new));
                 self.current().link(var, tgt);
                 self.compile_process(span, process)?;
             }
@@ -454,10 +498,75 @@ impl Compiler {
                 label,
                 captures,
                 body,
-            } => todo!(),
-            Command::Loop(local_name, local_name1, captures) => todo!(),
-            Command::SendType(_, process) => todo!(),
-            Command::ReceiveType(local_name, process) => todo!(),
+            } => {
+                tdb!(self.current().tab_level, "{}.begin@{:?}", subject, label);
+                let driver = self
+                    .current()
+                    .get_var(&Var::Name(subject.clone()), &VariableUsage::Move)?;
+                let loop_var = self.current().define_var(Var::Loop(label.clone()));
+
+                let package_place = self.alloc(OnceLock::new());
+                let context = self.current().capture(&captures)?;
+                println!("Context in begin: {context:?}");
+                let (captures, pack) = self.current().pack(context);
+                self.current()
+                    .loop_points
+                    .insert(label.clone(), pack.clone());
+
+                self.push_current(0);
+                let (captures_inner, cx) = self.current().new_var();
+                self.current().unpack_self(cx, &pack);
+                let root_inner = self.current().define_var(Var::Name(subject.clone()));
+                self.compile_process(span, body)?;
+                let root_inner = Global::Destruct(GlobalCont::Par(
+                    self.alloc(captures_inner),
+                    self.alloc(root_inner),
+                ));
+                let package = self.pop_current();
+                let package = self.finalize_package(
+                    package,
+                    root_inner,
+                    Global::Destruct(GlobalCont::Continue),
+                    0,
+                );
+                self.write_arena().get(package_place).set(package).unwrap();
+
+                let captures = self.alloc(captures);
+                let driver = self.alloc(driver);
+                let package_global = Global::Package(
+                    package_place,
+                    self.alloc(Global::Value(Value::Break)),
+                    FanBehavior::Propagate,
+                );
+                self.current().link(loop_var, package_global.clone());
+                self.current()
+                    .link(package_global, Global::Value(Value::Pair(captures, driver)));
+                self.current().close_all_vars();
+            }
+            Command::Loop(label, driver, captures) => {
+                tdb!(self.current().tab_level, "{}.loop@{:?}", driver, label);
+                let loop_package = self
+                    .current()
+                    .get_var(&Var::Loop(label.clone()), &VariableUsage::Copy)?;
+                let pack_data = self.current().loop_points.get(label).unwrap().clone();
+                let driver = self.current().get_var(&Var::Name(subject.clone()), usage)?;
+
+                let context = self.current().capture(&captures)?;
+                println!("Context in loop: {context:?}");
+                let captures = self.current().pack_with_shape(context, &pack_data);
+
+                let captures = self.alloc(captures);
+                let driver = self.alloc(driver);
+                self.current()
+                    .link(loop_package, Global::Value(Value::Pair(captures, driver)));
+                self.current().close_all_vars();
+            }
+            Command::SendType(_, process) => {
+                self.compile_process(span, process)?;
+            }
+            Command::ReceiveType(_, process) => {
+                self.compile_process(span, process)?;
+            }
         }
         Ok(())
     }
@@ -488,8 +597,28 @@ impl Compiler {
                 self.compile_command(span, name, usage, command)?;
             }
             Process::Telltypes(span, process) => todo!(),
-            Process::Block(span, id, process, process1) => todo!(),
-            Process::Goto(span, id, captures) => todo!(),
+            Process::Block(span, index, body, process) => {
+                println!("{index} {process:?}");
+                let prev = self.blocks.insert(*index, body.clone());
+                self.compile_process(span, process)?;
+                match prev {
+                    Some(old) => {
+                        self.blocks.insert(*index, old);
+                    }
+                    None => {
+                        self.blocks.shift_remove(index);
+                    }
+                }
+            }
+            Process::Goto(_, index, _) => {
+                println!("{index}");
+                let body = self
+                    .blocks
+                    .get(index)
+                    .expect("goto target missing during compilation")
+                    .clone();
+                self.compile_process(span, &body)?;
+            }
             Process::Unreachable(span) => todo!(),
         };
         Ok(())
@@ -553,7 +682,7 @@ impl Compiler {
         mut current: PackageState,
         root: Global,
         captures: Global,
-        num_vars: usize,
+        out_num_vars: usize,
     ) -> Package {
         current.close_all_vars();
         let num_vars = current.num_vars;
@@ -595,14 +724,18 @@ impl Compiler {
         let mut arena = Arc::into_inner(arena).unwrap();
         let mut write = core::mem::take(&mut arena.write);
         let mut freezer = Freezer::new(&arena, &mut write);
-        freezer.num_vars = num_vars;
+        freezer.num_vars = out_num_vars;
         let root = freezer.freeze_global(&arena, &instance, &root);
         let captures = freezer.freeze_global(&arena, &instance, &captures);
+        let root = freezer.write.alloc(root);
+        let captures = freezer.write.alloc(captures);
         let redexes: Vec<_> = redexes
             .into_iter()
             .map(|(a, b)| {
                 let a = freezer.freeze_node(&arena, &a);
                 let b = freezer.freeze_node(&arena, &b);
+                let a = freezer.write.alloc(a);
+                let b = freezer.write.alloc(b);
                 (a, b)
             })
             .collect();

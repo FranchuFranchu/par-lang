@@ -452,10 +452,12 @@ impl<A: ArenaLike> Runtime<A> {
     ///
     /// This function is analogous to a "VM enter"
     pub fn reduce(&mut self) -> Option<(UserData, Node)> {
+        self.status();
         while let Some((a, b)) = self.redexes.pop() {
             if let Some(v) = self.interact(a, b) {
                 return Some(v);
             }
+            self.status();
         }
         None
     }
@@ -816,6 +818,13 @@ impl<A: ArenaLike> Runtime<A> {
                         panic!("Unimplemented destruction between: {:?} {:?}", a, b)
                     }
                 }
+            }
+            (NodeRef::Global(_, _, a), NodeRef::Global(_, _, b)) => {
+                panic!(
+                    "Unimplemented reduction: Global.{} Global.{}",
+                    a.variant_name(),
+                    b.variant_name()
+                )
             }
             (a, b) => {
                 panic!(

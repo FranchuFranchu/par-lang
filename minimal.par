@@ -1,11 +1,15 @@
-def Main: ! = chan user {
-    let a = box .true!
-    let b = a
-    a.case {
-        .true! => {
-            b.case {
-                .true! => { user! }
-            }
-        }
-    }
+// Factorial using Nat.Repeat
+def Factorial: [Nat] ! = chan user {
+  user[n]
+  let result = !
+  let driver: recursive either { .step self, .end! } = .end!
+  driver.begin.case {
+    .end => {
+        driver?
+        user <> result
+    },
+    .step => {
+      driver.loop
+    },
+  }
 }
