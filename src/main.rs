@@ -216,7 +216,7 @@ fn run_definition(config: &BuildConfig, file: PathBuf, definition: String) {
 
         println!("{}", stats.show(start.elapsed()));
         if let Backend::New(new) = &rt_compiled.backend {
-            eprintln!("\tArena size: {}", new.arena.memory_size());
+            eprintln!("{}", new.arena.stats());
         }
     });
 }

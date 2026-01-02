@@ -8,7 +8,7 @@ use num_bigint::BigInt;
 
 use super::types::Type;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Primitive {
     Int(BigInt),
     String(ParString),

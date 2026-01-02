@@ -4,11 +4,7 @@
 // - Boxes
 // - Definitions
 
-use std::{
-    collections::HashMap,
-    fmt::Display,
-    sync::{Arc, OnceLock},
-};
+use std::{collections::HashMap, fmt::Display, sync::Arc};
 
 use indexmap::IndexMap;
 use tokio::time::Instant;
@@ -44,12 +40,13 @@ macro_rules! err {
     };
 }
 
+// Debug log with a tab level.
 macro_rules! tdb {
     ($tab:expr, $fmt:expr, $($arg:tt)*) => {
-        eprintln!(concat!("{}", $fmt), " ".repeat($tab * 4), $($arg)*)
+        () //eprintln!(concat!("{}", $fmt), " ".repeat($tab * 4), $($arg)*)
     };
     ($tab:expr, $fmt:expr) => {
-        eprintln!(concat!("{}", $fmt), " ".repeat($tab * 4))
+        () //eprintln!(concat!("{}", $fmt), " ".repeat($tab * 4))
     };
 }
 #[derive(Clone, Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]
@@ -328,7 +325,7 @@ pub struct Compiler {
     permanent: Arena,
     current: Vec<PackageState>,
     type_defs: TypeDefs,
-    definition_packages: HashMap<GlobalName, Index<OnceLock<Package>>>,
+    definition_packages: HashMap<GlobalName, PackagePtr>,
     blocks: IndexMap<usize, Arc<Process<Type>>>,
 }
 
@@ -367,6 +364,9 @@ impl Compiler {
     pub fn read_arena(&self) -> &Arena {
         &self.permanent
     }
+    pub fn read_arena_mut(&mut self) -> &mut Arena {
+        &mut self.permanent
+    }
     pub fn intern(&mut self, s: &str) -> Index<str> {
         // TODO: This unnecessarily interns strings that are unused in the final net.
         self.permanent.intern(s)
@@ -376,6 +376,9 @@ impl Compiler {
     }
     pub fn get<T: Indexable + ?Sized>(&self, index: Index<T>) -> &T {
         self.read_arena().get(index)
+    }
+    pub fn get_mut<T: Indexable + ?Sized>(&mut self, index: Index<T>) -> &mut T {
+        self.read_arena_mut().get_mut(index)
     }
     pub fn alloc<T: Indexable>(&mut self, data: T) -> Index<T> {
         self.write_arena().alloc(data)
@@ -388,13 +391,7 @@ impl Compiler {
         let package = self
             .definition_packages
             .entry(global_name.clone())
-            .or_insert_with(|| {
-                self.current
-                    .last_mut()
-                    .unwrap()
-                    .arena()
-                    .alloc(OnceLock::<Package>::new())
-            })
+            .or_insert_with(|| self.current.last_mut().unwrap().arena().alloc(None))
             .clone();
 
         let captures = self.alloc(Global::Value(Value::Break));
@@ -556,7 +553,7 @@ impl Compiler {
                     "defined the loop variable; it's {:?}",
                     loop_var
                 );
-                let package_place = self.alloc(OnceLock::new());
+                let package_place = self.write_arena().alloc_in_new(None);
                 let context = self.current().capture(&captures)?;
                 let (captures, pack) = self.current().pack(context);
                 self.current()
@@ -583,7 +580,11 @@ impl Compiler {
                     0,
                     format!("begin body at {span}"),
                 );
-                self.write_arena().get(package_place).set(package).unwrap();
+                assert!(self
+                    .write_arena()
+                    .get_mut(package_place)
+                    .replace(package)
+                    .is_none());
 
                 let captures = self.alloc(captures);
                 let driver = self.alloc(driver);
@@ -622,7 +623,8 @@ impl Compiler {
 
                 let captures = self.alloc(captures);
                 let driver = self.alloc(driver);
-                println!("Getting {label:?}");
+
+                tdb!(self.current().tab_level, "Getting {label:?}");
                 let loop_package = self
                     .current()
                     .get_var(&Var::Loop(label.clone()), &VariableUsage::Copy)?;
@@ -715,7 +717,7 @@ impl Compiler {
                 let current = self.pop_current();
                 let package =
                     self.finalize_package(current, root, b, 0, format!("box expression at {span}"));
-                let package = OnceLock::from(package);
+                let package = Some(package);
                 let package = self.alloc(package);
 
                 let global = Global::Package(package, captures_global, FanBehavior::Propagate);
@@ -765,7 +767,7 @@ impl Compiler {
             write: write_arena,
         };
         let arena = Arc::new(arena);
-        {
+        /*{
             let mut shower = Shower::from_arena(&arena);
             shower.deref_globals = true;
             println!("Package:\n\t{}", Showable(&root, &shower));
@@ -773,7 +775,7 @@ impl Compiler {
             for (a, b) in &redexes {
                 println!("\t{} ~ {}", Showable(a, &shower), Showable(b, &shower));
             }
-        }
+        }*/
         let mut runtime = Runtime::new(arena.clone());
         let instance = Instance::from_num_vars(num_vars);
         for (a, b) in redexes {
@@ -786,10 +788,11 @@ impl Compiler {
         let redexes: Vec<_> = std::iter::from_fn(|| runtime.reduce())
             .map(|(a, b)| (Node::Linear(a.into()), b))
             .collect();
-        println!(
+
+        /*eprintln!(
             "Pre-reduction rewrites:\n{}",
             runtime.rewrites.show(t.elapsed())
-        );
+        );*/
         drop(runtime);
         let mut arena = Arc::into_inner(arena).unwrap();
         let mut write = core::mem::take(&mut arena.write);
@@ -834,7 +837,7 @@ impl Compiler {
         definitions: &IndexMap<GlobalName, (Definition<Arc<Expression<Type>>>, Type)>,
     ) -> Result<()> {
         for (k, (v, _type)) in definitions.iter() {
-            let p = self.permanent.alloc(OnceLock::new());
+            let p = self.permanent.alloc_in_new(None);
             self.definition_packages.insert(k.clone(), p);
         }
         for (k, (v, _type)) in definitions.iter() {
@@ -849,8 +852,10 @@ impl Compiler {
                 format!("global definition {k}"),
             );
             let package_destination = self.definition_packages.get(k).unwrap();
-            self.get(*package_destination).set(package).unwrap();
-            println!("{}", self.current.len());
+            assert!(self
+                .get_mut(*package_destination)
+                .replace(package)
+                .is_none());
         }
         Ok(())
     }
@@ -905,8 +910,6 @@ impl Compiled {
         for (_, _, ty) in type_defs.clone().globals.values() {
             closure(ty).unwrap();
         }
-
-        println!("Code:\n{}\n// END CODE", arena);
 
         Ok(Self {
             arena: Arc::new(arena),

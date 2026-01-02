@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, HashMap};
 use std::fmt::{Debug, Display};
+use std::hash::Hash;
 use std::sync::OnceLock;
 
 use crate::runtime::new::{
@@ -12,13 +13,13 @@ use super::runtime::{Global, Package};
 pub const HIGHER_HALF: usize = usize::MAX / 2 + 1;
 
 #[derive(Debug)]
-struct ArenaSlots<T> {
+struct ArenaSlots<T: Clone + Debug + Indexable + Eq + Hash> {
     inner: Vec<T>,
     start: usize,
-    intern: HashMap<usize, T>,
+    intern: HashMap<T, usize>,
 }
 
-impl<T> Default for ArenaSlots<T> {
+impl<T: Clone + Debug + Indexable + Eq + Hash> Default for ArenaSlots<T> {
     fn default() -> Self {
         Self {
             inner: vec![],
@@ -27,7 +28,7 @@ impl<T> Default for ArenaSlots<T> {
         }
     }
 }
-impl<T> ArenaSlots<T> {
+impl<T: Clone + Debug + Indexable + Eq + Hash> ArenaSlots<T> {
     fn memory_usage(&self) -> usize {
         size_of::<T>() * self.inner.len()
     }
@@ -41,15 +42,40 @@ impl<T> ArenaSlots<T> {
             &self.inner[index - self.start..index - self.start + length]
         }
     }
-    fn alloc_one(&mut self, data: T) -> usize {
-        let index = self.inner.len() + self.start;
-        self.inner.push(data);
-        index
+    fn get_one_mut(&mut self, index: usize) -> &mut T {
+        &mut self.inner[index - self.start]
     }
+    fn get_slice_mut(&mut self, index: usize, length: usize) -> &mut [T] {
+        if length == 0 {
+            &mut self.inner[0..0]
+        } else {
+            &mut self.inner[index - self.start..index - self.start + length]
+        }
+    }
+    /// Allocate a piece of data in the arena
+    /// If the data is already present, the interned
+    /// index will be returned. This behavior
+    /// can be overriden with `force_new`
+    fn alloc_one(&mut self, data: T, force_new: bool) -> usize {
+        match (force_new, self.intern.get(&data)) {
+            (false, Some(interned)) => interned.clone(),
+            _ => {
+                let index = self.inner.len() + self.start;
+                self.intern.insert(data.clone(), index);
+                self.inner.push(data);
+                index
+            }
+        }
+    }
+    /// Allocate a contiguous slice of data by cloning it
+    /// This function never interns.
     fn alloc_slice(&mut self, data: &[T]) -> (usize, usize)
     where
         T: Clone,
     {
+        if data.len() == 0 {
+            return (0, 0);
+        }
         let index = self.inner.len() + self.start;
         let len = data.len();
         self.inner.extend_from_slice(data);
@@ -79,6 +105,9 @@ impl<T> ArenaSlots<T> {
     fn contains_range(&self, index: usize, len: usize) -> bool {
         self.contains(index) && (len == 0 || self.contains(index + len - 1))
     }
+    fn len(&self) -> usize {
+        self.inner.len()
+    }
 }
 
 #[derive(Default, Debug)]
@@ -87,7 +116,7 @@ impl<T> ArenaSlots<T> {
 /// and values can be accessed later with [`Arena::get`]
 pub struct Arena {
     nodes: ArenaSlots<Global>,
-    packages: ArenaSlots<OnceLock<Package>>,
+    packages: ArenaSlots<Option<Package>>,
     redexes: ArenaSlots<(Index<Global>, Index<Global>)>,
     case_branches: ArenaSlots<(Index<str>, PackageBody)>,
 
@@ -174,11 +203,17 @@ impl Arena {
     pub fn get<T: Indexable + ?Sized>(&self, index: Index<T>) -> &T {
         T::get(self, index)
     }
+    pub fn get_mut<T: Indexable + ?Sized>(&mut self, index: Index<T>) -> &mut T {
+        T::get_mut(self, index)
+    }
     pub fn alloc<T: Indexable>(&mut self, data: T) -> Index<T> {
-        T::alloc(self, data)
+        T::alloc(self, data, false)
+    }
+    pub fn alloc_in_new<T: Indexable>(&mut self, data: T) -> Index<T> {
+        T::alloc(self, data, true)
     }
     pub fn alloc_clone<T: Indexable + ?Sized>(&mut self, data: &T) -> Index<T> {
-        T::alloc_clone(self, data)
+        T::alloc_clone(self, data, false)
     }
     pub fn contains<T: Indexable + ?Sized>(&self, index: Index<T>) -> bool {
         T::contains(self, index)
@@ -217,7 +252,7 @@ impl std::fmt::Display for Arena {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let shower = Shower::from_arena(&self);
         for (idx, package) in self.packages.inner.iter().enumerate() {
-            let Some(lock) = package.get() else {
+            let Some(lock) = package else {
                 write!(f, "@{} = <unfilled>\n", idx)?;
                 continue;
             };
@@ -253,11 +288,12 @@ impl<T: Indexable + ?Sized> Copy for Index<T> {}
 pub trait Indexable {
     type Store: Copy + PartialEq + Eq + PartialOrd + Ord;
     fn get<'s>(store: &'s Arena, index: Index<Self>) -> &'s Self;
+    fn get_mut<'s>(store: &'s mut Arena, index: Index<Self>) -> &'s mut Self;
     fn contains<'s>(store: &'s Arena, index: Index<Self>) -> bool;
-    fn alloc<'s>(store: &'s mut Arena, data: Self) -> Index<Self>
+    fn alloc<'s>(store: &'s mut Arena, data: Self, force_new: bool) -> Index<Self>
     where
         Self: Sized;
-    fn alloc_clone<'s>(_: &'s mut Arena, _: &Self) -> Index<Self> {
+    fn alloc_clone<'s>(_: &'s mut Arena, _: &Self, force_new: bool) -> Index<Self> {
         todo!() //Self::alloc(data.clone())
     }
     fn shift(index: &mut Index<Self>, offset: usize);
@@ -272,7 +308,10 @@ macro_rules! slice_indexable {
             fn get<'s>(store: &'s Arena, index: Index<Self>) -> &'s Self {
                 store.$field.get_slice(index.0 .0, index.0 .1)
             }
-            fn alloc_clone<'s>(store: &'s mut Arena, data: &Self) -> Index<Self> {
+            fn get_mut<'s>(store: &'s mut Arena, index: Index<Self>) -> &'s mut Self {
+                store.$field.get_slice_mut(index.0 .0, index.0 .1)
+            }
+            fn alloc_clone<'s>(store: &'s mut Arena, data: &Self, force_new: bool) -> Index<Self> {
                 Index(store.$field.alloc_slice(data))
             }
             fn contains<'s>(store: &'s Arena, index: Index<Self>) -> bool {
@@ -316,10 +355,13 @@ macro_rules! sized_indexable {
         impl Indexable for $element {
             type Store = usize;
             fn get<'s>(store: &'s Arena, index: Index<Self>) -> &'s Self {
-                &store.$field.get_one(index.0)
+                store.$field.get_one(index.0)
             }
-            fn alloc<'s>(store: &'s mut Arena, data: Self) -> Index<Self> {
-                Index(store.$field.alloc_one(data))
+            fn get_mut<'s>(store: &'s mut Arena, index: Index<Self>) -> &'s mut Self {
+                store.$field.get_one_mut(index.0)
+            }
+            fn alloc<'s>(store: &'s mut Arena, data: Self, force_new: bool) -> Index<Self> {
+                Index(store.$field.alloc_one(data, force_new))
             }
             fn contains<'s>(store: &'s Arena, index: Index<Self>) -> bool {
                 store.$field.contains(index.0)
@@ -347,7 +389,7 @@ slice_indexable!(nodes, Global, 0);
 slice_indexable!(redexes, (Index<Global>, Index<Global>), 2);
 sized_indexable!(redexes, (Index<Global>, Index<Global>), 2);
 sized_indexable!(case_branches, (Index<str>, PackageBody), 3);
-sized_indexable!(packages, OnceLock<Package>, 1);
+sized_indexable!(packages, Option<Package>, 1);
 sized_indexable!(nodes, Global, 0);
 
 impl Indexable for str {
@@ -356,7 +398,11 @@ impl Indexable for str {
         &store.strings
             [index.0 .0 - store.strings_start..index.0 .0 + index.0 .1 - store.strings_start]
     }
-    fn alloc_clone<'s>(store: &'s mut Arena, data: &Self) -> Index<Self> {
+    fn get_mut<'s>(store: &'s mut Arena, index: Index<Self>) -> &'s mut Self {
+        &mut store.strings
+            [index.0 .0 - store.strings_start..index.0 .0 + index.0 .1 - store.strings_start]
+    }
+    fn alloc_clone<'s>(store: &'s mut Arena, data: &Self, force_new: bool) -> Index<Self> {
         let start = store.strings.len() + store.strings_start;
         store.strings.push_str(data);
         Index((start, data.len()))
@@ -423,6 +469,14 @@ where
         self.0.cmp(&other.0)
     }
 }
+impl<T: Indexable + ?Sized> Hash for Index<T>
+where
+    T::Store: Hash,
+{
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.0.hash(state);
+    }
+}
 
 pub trait ArenaLike: Clone {
     fn get<T: Indexable + ?Sized>(&self, index: Index<T>) -> &T;
@@ -471,10 +525,13 @@ impl TripleArena {
         }
     }
     pub fn alloc<T: Indexable>(&mut self, data: T) -> Index<T> {
-        T::alloc(&mut self.write, data)
+        T::alloc(&mut self.write, data, false)
+    }
+    pub fn alloc_new<T: Indexable>(&mut self, data: T) -> Index<T> {
+        T::alloc(&mut self.write, data, true)
     }
     pub fn alloc_clone<T: Indexable + ?Sized>(&mut self, data: &T) -> Index<T> {
-        T::alloc_clone(&mut self.write, data)
+        T::alloc_clone(&mut self.write, data, false)
     }
     pub fn memory_size(&self) -> usize {
         0
@@ -536,5 +593,27 @@ impl std::fmt::Display for IndexAddr {
 impl std::fmt::Debug for IndexAddr {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         <IndexAddr as Display>::fmt(&self, f)
+    }
+}
+
+impl Arena {
+    pub fn stats(&self) -> String {
+        format!(
+            "\
+            \tArena memory usage: {}\n\
+            \tAmount of:\n\
+            \t\tNodes: {}\n\
+            \t\tPackages: {}\n\
+            \t\tRedexes: {}\n\
+            \t\tCase branches: {}\n\
+            \t\tString characters: {}\n\
+        ",
+            self.memory_size(),
+            self.nodes.len(),
+            self.packages.len(),
+            self.redexes.len(),
+            self.case_branches.len(),
+            self.strings.len(),
+        )
     }
 }

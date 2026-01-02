@@ -28,6 +28,7 @@
 
 use core::panic;
 use std::fmt::Debug;
+use std::hash::Hash;
 use std::sync::OnceLock;
 
 use crate::runtime::new::show::Shower;
@@ -40,7 +41,7 @@ use std::sync::{Arc, Mutex};
 
 use tokio::sync::oneshot;
 
-pub type PackagePtr = Index<OnceLock<Package>>;
+pub type PackagePtr = Index<Option<Package>>;
 pub type GlobalPtr = Index<Global>;
 type Str = Index<str>;
 
@@ -121,13 +122,40 @@ pub type ExternalFn = fn(crate::runtime::Handle) -> ExternalFnRet;
 #[derive(Clone)]
 pub struct ExternalArc(pub Arc<dyn Send + Sync + Fn(crate::runtime::Handle) -> ExternalFnRet>);
 
+impl Hash for ExternalArc {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        Arc::as_ptr(&self.0).addr().hash(state);
+    }
+}
+impl PartialEq for ExternalArc {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::as_ptr(&self.0)
+            .addr()
+            .eq(&Arc::as_ptr(&other.0).addr())
+    }
+}
+impl Eq for ExternalArc {}
+
+impl PartialOrd for ExternalArc {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+impl Ord for ExternalArc {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        Arc::as_ptr(&self.0)
+            .addr()
+            .cmp(&Arc::as_ptr(&other.0).addr())
+    }
+}
+
 impl Debug for ExternalArc {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ExternalArc").finish_non_exhaustive()
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 /// A PackageBody is the inner body of a package.
 /// The difference with `Package` is that `PackageBody` does not contain `num_vars`
 /// (because a package inside a PackageBody might not require a new instance)
@@ -139,8 +167,7 @@ pub struct PackageBody {
     // TODO: Store this inline in the arena.
     pub redexes: Index<[(Index<Global>, Index<Global>)]>,
 }
-
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 /// A package is a `Global` subgraph that is isolated from the rest of the program
 /// It does not use the same Instance as its environment, and so it requires a
 /// separate Instance to be created when it is expanded.
@@ -149,8 +176,7 @@ pub struct Package {
     /// How large the Instance must be.
     pub num_vars: usize,
 }
-
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Global {
     Variable(usize),
     Package(PackagePtr, GlobalPtr, FanBehavior),
@@ -194,7 +220,7 @@ pub enum Shared {
 /// P is the type of children. Usually, this will be `GlobalPtr`, `Shared`, or `Box<Node>`
 ///
 /// There are [`Linear`] values, [`Shared`] values, and [`Global`] values.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Value<P> {
     /// The break node; created in break commands (`value!`)
     Break,
@@ -273,7 +299,7 @@ impl From<UserData> for Linear {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 /// A "global continuation"; a negative node stored in the global array
 /// When it interacts with a value, it attempts to destructure it.
 pub enum GlobalCont {
@@ -352,13 +378,9 @@ pub trait Linker<A: ArenaLike> {
         let instance = self.create_package_instance(package);
         self.instantiate_package_body_captures(instance, &package.body, captures)
     }
-    fn instantiate_package_captures(
-        &mut self,
-        package: Index<OnceLock<Package>>,
-        captures: Node,
-    ) -> Node {
+    fn instantiate_package_captures(&mut self, package: PackagePtr, captures: Node) -> Node {
         let arena = self.arena();
-        let package = arena.get(package).get().unwrap();
+        let package = arena.get(package).as_ref().unwrap();
         self.instantiate_package_captures_direct(package, captures)
     }
     fn instantiate_package_body_captures(

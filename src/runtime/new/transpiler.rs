@@ -34,7 +34,7 @@ pub struct NetTranspiler {
 pub struct ProgramTranspiler {
     stack: Vec<NetTranspiler>,
     dest: Arena,
-    packages_in_nodes: HashMap<usize, Index<OnceLock<Package>>>,
+    packages_in_nodes: HashMap<usize, PackagePtr>,
     id_to_package: Arc<IndexMap<usize, Net>>,
 }
 
@@ -176,11 +176,15 @@ impl ProgramTranspiler {
         self.stack.pop();
         package
     }
-    fn transpile_definition_package(&mut self, id: usize, body: Net) -> Index<OnceLock<Package>> {
-        let package_index = self.dest.alloc(OnceLock::new());
+    fn transpile_definition_package(&mut self, id: usize, body: Net) -> PackagePtr {
+        let package_index = self.dest.alloc(None);
         self.packages_in_nodes.insert(id, package_index.clone());
         let package = self.transpile_package_go(body);
-        self.dest.get(package_index.clone()).set(package).unwrap();
+        assert!(self
+            .dest
+            .get_mut(package_index.clone())
+            .replace(package)
+            .is_none());
         package_index
     }
     fn transpile_casebranch_package(&mut self, body: Net) -> (PackageBody, usize) {

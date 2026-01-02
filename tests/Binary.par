@@ -1,3 +1,146 @@
+type Tree<t> = recursive either {
+    .branch (self) self,
+    .leaf t,
+}
+
+type Trees<t> = recursive either {
+  .b0 self,
+  .b1 (Tree<t>) self,
+  .e Tree<t>,
+}
+
+dec Trees.Merge : [type t] [Trees<t>] [t] Trees<t>
+def Trees.Merge = [type t] [trees] [t]
+  let t : Tree<t> = .leaf t in
+  trees.begin.case {
+    .b0 x => .b1(t) x,
+    .b1(u) x => let t = .branch(u) t in .b0 x.loop,
+    .e u => .b0 .e .branch(u) t,
+  }
+
+dec Trees.Flatten : [type t] [Trees<t>] Tree<t>
+def Trees.Flatten = [type t] [trees]
+  trees.begin.case {
+    .b0 x => x.loop,
+    .b1(t) x =>
+      x.begin.case {
+        .b0 x => x.loop,
+        .b1(u) x =>
+          let t = .branch(u) t in
+          x.loop,
+        .e u => .branch(u) t,
+      },
+    .e t => t,
+  }
+
+dec ListToTree : [type t] [t] [List<t>] Tree<t>
+def ListToTree = [type t] [i] [list]
+  let trees : Trees<t> = .e .leaf i in
+  let trees : Trees<t> = list.begin.case {
+    .item(t) x =>
+      let trees = Trees.Merge(type t)(trees, t) in
+      x.loop,
+    .end! => trees,
+  } in
+  Trees.Flatten(type t)(trees)
+
+dec ChoiceLoop: [type t] [List<t>] [List<t>] recursive choice {
+	.left => either { .end List<t>, .item (t) self },
+	.right => either { .end List<t>, .item (t) self },
+}
+
+def ChoiceLoop =[type t] [left] [right] chan user {
+	left.begin@consume_left
+	right.begin@consume_right
+	user.case {
+		.left => {
+			left.case {
+				.item(head) => {
+				    user.item(head)
+			        left.loop@consume_left
+				}
+				.end => {
+				    user <> .end right
+				}
+			}
+		}
+		.right => {
+			right.case {
+				.item(head) => {
+				    user.item(head)
+			        right.loop@consume_right
+				}
+				.end => {
+				    user <> .end left
+				}
+			}
+		}
+	}
+}
+
+dec Merge: [type a] [box [a] [a] (a) (a) Ordering] [List<a>] [List<a>]  List<a>
+def Merge = [type a] [cmp] [a] [b] chan out: dual List<a> {
+	let consumer = ChoiceLoop(type a)(a, b)
+	consumer.left.case {
+		.item(head_left) => {}
+		.end right => {
+			out <> right
+		}
+	}
+	consumer.right.case {
+		.item(head_right) => {}
+		.end left => {
+			out <> .item(head_left) left
+		}
+	}
+	consumer.begin
+	let (head_left) (head_right) ordering = cmp(head_left, head_right)
+	ordering.case {
+		.less => {
+			out.item(head_left)
+	consumer.left.case {
+		.item(head_left) => {}
+		.end right => {
+			out <> .item(head_right) right
+		}
+	}
+			consumer.loop
+		},
+		else => {
+			out.item(head_right)
+	consumer.right.case {
+		.item(head_right) => {}
+		.end left => {
+			out <> .item(head_left) left
+		}
+	}
+			consumer.loop
+		}
+	}
+}
+
+type NRepeat = recursive either {
+  .end!,
+  .step self,
+}
+
+
+dec Mergesort: [type a] [box [a] [a] (a) (a) Ordering] [List<a>] List<a>
+def Mergesort = [type a] [cmp] [input]
+    input.case {
+        .item(head) input =>  {
+	        let input = ListToTree(type a)(head, input)
+           	in input.begin.case {
+          		.leaf leaf => { .item(leaf).end! },
+          		.branch (left) right => {
+         			Merge(type a)(cmp, left.loop, right.loop)
+          		},
+           	}
+        },
+        .end! => {
+            .end!
+        }
+    }
 dec Quicksort: [type a] [box [a] [a] (a) (a) Ordering] [List<a>] List<a>
 def Quicksort = [type a] [cmp] [input] chan out: dual List<a> {
     let suffix: List<a> = .end!
@@ -176,10 +319,10 @@ def Reverse: [type a] [List<a>] List<a> = [type a] [list] chan yield {
 }
 
 def Main = chan user {
-    let list = Nat.Range(0, 256)
+    let list = Nat.Range(0, 2048)
     let list = Reverse(type Nat)(list)
     let list = ListMap(type Nat)(type BNat)(list)(box BNat.FromNat)
-    let list = Quicksort(type BNat)(box [a] [b] (a) (b) BNat.Cmp(a, b))(list)
+    let list = Mergesort(type BNat)(box [a] [b] (a) (b) BNat.Cmp(a, b))(list)
     let list = ListMap(type BNat)(type Nat)(list)(box BNat.ToNat)
     user!
 }

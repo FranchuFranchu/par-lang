@@ -6,8 +6,8 @@ use crate::runtime::{
     new::{
         arena::{Arena, ArenaTrim, Index, TripleArena, HIGHER_HALF},
         runtime::{
-            Global, GlobalCont, Instance, Linear, Node, Package, PackageBody, Shared, SharedHole,
-            SyncShared, Value,
+            Global, GlobalCont, Instance, Linear, Node, Package, PackageBody, PackagePtr, Shared,
+            SharedHole, SyncShared, Value,
         },
     },
     old::net::FanBehavior,
@@ -246,14 +246,10 @@ impl<'a> Freezer<'a> {
             self.write.alloc_clone(redexes.as_ref())
         }
     }
-    pub fn maybe_freeze_package(
-        &mut self,
-        read: &TripleArena,
-        package: &Index<OnceLock<Package>>,
-    ) -> Index<OnceLock<Package>> {
+    pub fn maybe_freeze_package(&mut self, read: &TripleArena, package: &PackagePtr) -> PackagePtr {
         if package.0 >= HIGHER_HALF {
             let mut child = Freezer::new(read, self.write);
-            let package = read.get(*package).get().unwrap();
+            let package = read.get(package.clone()).as_ref().unwrap();
             let instance = Instance::from_num_vars(package.num_vars);
 
             let root = child.freeze_global(&read, &instance, read.get(package.body.root));
@@ -272,7 +268,7 @@ impl<'a> Freezer<'a> {
                 })
                 .collect();
             let redexes = child.write.alloc_clone(redexes.as_ref());
-            child.write.alloc(OnceLock::from(Package {
+            child.write.alloc(Some(Package {
                 body: PackageBody {
                     root,
                     captures,

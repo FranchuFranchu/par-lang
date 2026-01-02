@@ -35,7 +35,7 @@ pub fn number_to_string(mut number: usize) -> String {
     result
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 /// The behavior of a `Package` node when it interacts
 /// with a fan node (duplicate or erase)
 pub enum FanBehavior {
