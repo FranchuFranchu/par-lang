@@ -45,7 +45,7 @@ pub type GlobalPtr = Index<Global>;
 type Str = Index<str>;
 
 #[derive(Debug)]
-struct InstanceInner(Mutex<Box<[Option<Node>]>>);
+pub(crate) struct InstanceInner(pub(crate) Mutex<Box<[Option<Node>]>>);
 
 #[derive(Clone, Debug)]
 /// An `Instance` stores the state associated to an instance of a Global node.
@@ -65,7 +65,7 @@ struct InstanceInner(Mutex<Box<[Option<Node>]>>);
 /// At the end of the lifetime of Instances, all of them go out of scope and are eventually dropped. Because of the way
 /// the runtime is designed, all slots inside of it must be empty. This is when the `Instance` is destroyed.
 pub struct Instance {
-    vars: Arc<InstanceInner>,
+    pub(crate) vars: Arc<InstanceInner>,
 }
 
 impl Instance {
@@ -83,9 +83,6 @@ impl Instance {
         let slot = lock.get_mut(*index).expect("Invalid index in variable!");
         inner(slot)
     }
-}
-
-impl Instance {
     pub fn identifier(&self) -> usize {
         Arc::as_ptr(&self.vars).addr()
     }
@@ -94,11 +91,11 @@ impl Instance {
 impl Drop for InstanceInner {
     fn drop(&mut self) {
         // This is a debugging tool to detect leaks.
-        for i in self.0.lock().unwrap().as_mut().iter() {
+        for (idx, i) in self.0.lock().unwrap().as_mut().iter().enumerate() {
             if !i.is_none() {
                 panic!(
                     "Data was leaked in an Instance:
-                    {i:?}
+                    {idx}: {i:?}
                 "
                 )
             }
@@ -394,6 +391,60 @@ pub trait Linker<A: ArenaLike> {
     }
 }
 
+/// NodeRef is an internal structure to make matching on Nodes easier.
+/// It is like a Node but includes a reference to the Global in the Global branch
+/// to allow matching on it
+enum NodeRef<'a> {
+    Linear(Linear),
+    Shared(Shared),
+    Global(Instance, Index<Global>, &'a Global),
+}
+impl<'a> NodeRef<'a> {
+    fn from_node(arena: &'a impl ArenaLike, node: Node) -> NodeRef<'a> {
+        match node {
+            Node::Linear(linear) => NodeRef::Linear(linear),
+            Node::Shared(shared) => NodeRef::Shared(shared),
+            Node::Global(instance, index) => NodeRef::Global(instance, index, arena.get(index)),
+        }
+    }
+    fn into_node(self) -> Node {
+        match self {
+            NodeRef::Linear(linear) => Node::Linear(linear),
+            NodeRef::Shared(shared) => Node::Shared(shared),
+            NodeRef::Global(instance, index, _) => Node::Global(instance, index),
+        }
+    }
+    fn as_external_fn(&self) -> Option<ExternalFn> {
+        match self {
+            NodeRef::Linear(Linear::Value(Value::ExternalFn(ext))) => Some(ext.clone()),
+            NodeRef::Global(_, _, Global::Value(Value::ExternalFn(ext))) => Some(ext.clone()),
+            NodeRef::Shared(Shared::Sync(shared))
+                if matches!(shared.as_ref(), SyncShared::Value(Value::ExternalFn(_))) =>
+            {
+                let SyncShared::Value(Value::ExternalFn(ext)) = shared.as_ref() else {
+                    unreachable!()
+                };
+                Some(ext.clone())
+            }
+            _ => None,
+        }
+    }
+    fn as_external_arc(&self) -> Option<ExternalArc> {
+        match self {
+            NodeRef::Linear(Linear::Value(Value::ExternalArc(ext))) => Some(ext.clone()),
+            NodeRef::Global(_, _, Global::Value(Value::ExternalArc(ext))) => Some(ext.clone()),
+            NodeRef::Shared(Shared::Sync(shared))
+                if matches!(shared.as_ref(), SyncShared::Value(Value::ExternalArc(_))) =>
+            {
+                let SyncShared::Value(Value::ExternalArc(ext)) = shared.as_ref() else {
+                    unreachable!()
+                };
+                Some(ext.clone())
+            }
+            _ => None,
+        }
+    }
+}
 impl From<Arc<Arena>> for Runtime<Arc<Arena>> {
     fn from(arena: Arc<Arena>) -> Self {
         Self {
@@ -429,16 +480,28 @@ impl<A: ArenaLike> Runtime<A> {
     }
     // Misc methods.
     fn set_var(&mut self, instance: Instance, index: usize, value: Node) {
-        let mut lock = instance.vars.0.lock().unwrap();
-        let slot = lock.get_mut(index).expect("Invalid index in variable!");
-        match slot {
-            Some(..) => {
-                self.link(slot.take().unwrap(), value);
-            }
-            None => {
-                *slot = Some(value);
+        {
+            let mut lock = instance.vars.0.lock().unwrap();
+            let slot = lock.get_mut(index);
+            let Some(slot) = slot else {
+                drop(lock);
+                let iaddr = Arc::as_ptr(&instance.vars);
+                let lock = instance.vars.0.lock().unwrap();
+                panic!(
+                    "Invalid index in variable:\nAttempted to set variable {} of the instance at {:p}, which has {} variables.",
+                    index, iaddr, lock.len()
+                )
+            };
+            match slot {
+                Some(..) => {
+                    self.link(slot.take().unwrap(), value);
+                }
+                None => {
+                    *slot = Some(value);
+                }
             }
         }
+        self.drop_instance(instance);
     }
     pub fn status(&self) {
         println!("Runtime status");
@@ -452,12 +515,10 @@ impl<A: ArenaLike> Runtime<A> {
     ///
     /// This function is analogous to a "VM enter"
     pub fn reduce(&mut self) -> Option<(UserData, Node)> {
-        self.status();
         while let Some((a, b)) = self.redexes.pop() {
             if let Some(v) = self.interact(a, b) {
                 return Some(v);
             }
-            self.status();
         }
         None
     }
@@ -581,66 +642,6 @@ impl<A: ArenaLike> Runtime<A> {
     /// Returns Some if an external operation with `UserData` was attempted.
     /// and None otherwise
     fn interact(&mut self, a: Node, b: Node) -> Option<(UserData, Node)> {
-        /// NodeRef is an internal structure to make matching on Nodes easier.
-        /// It is like a Node but includes a reference to the Global in the Global branch
-        /// to allow matching on it
-        enum NodeRef<'a> {
-            Linear(Linear),
-            Shared(Shared),
-            Global(Instance, Index<Global>, &'a Global),
-        }
-        impl<'a> NodeRef<'a> {
-            fn from_node(arena: &'a impl ArenaLike, node: Node) -> NodeRef<'a> {
-                match node {
-                    Node::Linear(linear) => NodeRef::Linear(linear),
-                    Node::Shared(shared) => NodeRef::Shared(shared),
-                    Node::Global(instance, index) => {
-                        NodeRef::Global(instance, index, arena.get(index))
-                    }
-                }
-            }
-            fn into_node(self) -> Node {
-                match self {
-                    NodeRef::Linear(linear) => Node::Linear(linear),
-                    NodeRef::Shared(shared) => Node::Shared(shared),
-                    NodeRef::Global(instance, index, _) => Node::Global(instance, index),
-                }
-            }
-            fn as_external_fn(&self) -> Option<ExternalFn> {
-                match self {
-                    NodeRef::Linear(Linear::Value(Value::ExternalFn(ext))) => Some(ext.clone()),
-                    NodeRef::Global(_, _, Global::Value(Value::ExternalFn(ext))) => {
-                        Some(ext.clone())
-                    }
-                    NodeRef::Shared(Shared::Sync(shared))
-                        if matches!(shared.as_ref(), SyncShared::Value(Value::ExternalFn(_))) =>
-                    {
-                        let SyncShared::Value(Value::ExternalFn(ext)) = shared.as_ref() else {
-                            unreachable!()
-                        };
-                        Some(ext.clone())
-                    }
-                    _ => None,
-                }
-            }
-            fn as_external_arc(&self) -> Option<ExternalArc> {
-                match self {
-                    NodeRef::Linear(Linear::Value(Value::ExternalArc(ext))) => Some(ext.clone()),
-                    NodeRef::Global(_, _, Global::Value(Value::ExternalArc(ext))) => {
-                        Some(ext.clone())
-                    }
-                    NodeRef::Shared(Shared::Sync(shared))
-                        if matches!(shared.as_ref(), SyncShared::Value(Value::ExternalArc(_))) =>
-                    {
-                        let SyncShared::Value(Value::ExternalArc(ext)) = shared.as_ref() else {
-                            unreachable!()
-                        };
-                        Some(ext.clone())
-                    }
-                    _ => None,
-                }
-            }
-        }
         let a = NodeRef::from_node(&self.arena, a);
         let b = NodeRef::from_node(&self.arena, b);
         // This is the match expression that is the core of the runtime
@@ -835,6 +836,17 @@ impl<A: ArenaLike> Runtime<A> {
             }
         };
         None
+    }
+    fn drop_instance(&mut self, instance: Instance) {
+        if Arc::strong_count(&instance.vars) == 1 {
+            if instance.vars.0.lock().unwrap().iter().any(|x| x.is_some()) {
+                let aref = self.arena();
+                eprintln!(
+                    "Attempted to drop non-empty instance: {}",
+                    Showable(&instance, &mut Shower::from_arena(&aref))
+                );
+            }
+        }
     }
 }
 

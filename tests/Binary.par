@@ -153,7 +153,7 @@ def TestRoundtrip: [Test]! = [test] chan user {
     let range = Nat.Range(0, 32)
     range.begin.case {
         .item (head) => {
-            test.assert("Testing round-trip worked", Nat.Equals(RT(head), head))
+            test.assert("Testing round-trip", Nat.Equals(RT(head), head))
             range.loop
         }
         .end => {}

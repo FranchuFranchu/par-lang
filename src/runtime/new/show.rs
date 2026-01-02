@@ -1,13 +1,15 @@
+use std::cell::RefCell;
 use std::fmt::Display;
 
 use crate::runtime::new::arena::ArenaLike;
 use crate::runtime::new::runtime::{
-    Global, GlobalPtr, Linear, Node, PackageBody, Shared, SyncShared, Value,
+    Global, GlobalPtr, Instance, Linear, Node, PackageBody, Shared, SyncShared, Value,
 };
 
 pub struct Shower<'a, A: ArenaLike> {
     pub arena: &'a A,
     pub deref_globals: bool,
+    pub depth: RefCell<usize>,
 }
 
 impl<'a, A: ArenaLike> Shower<'a, A> {
@@ -15,6 +17,7 @@ impl<'a, A: ArenaLike> Shower<'a, A> {
         Self {
             arena,
             deref_globals: true,
+            depth: RefCell::new(0),
         }
     }
 }
@@ -27,7 +30,12 @@ impl<'a, 'b, A: ArenaLike> std::fmt::Display for Showable<'a, 'b, &'a Node, A> {
         match self.0 {
             Node::Linear(linear) => write!(f, "-{}", Showable(linear, self.1)),
             Node::Shared(shared) => write!(f, "&{}", Showable(shared, self.1)),
-            Node::Global(_, global) => write!(f, "'{}", Showable(global, self.1)),
+            Node::Global(i, global) => write!(
+                f,
+                "{:x}'{}",
+                (i.identifier() >> 3) & 0xFF,
+                Showable(global, self.1)
+            ),
         }
     }
 }
@@ -128,16 +136,18 @@ impl<'a, 'b, A: ArenaLike> std::fmt::Display for Showable<'a, 'b, &'a Global, A>
                         write!(f, "[{}] {}", Showable(b, self.1), Showable(a, self.1))?;
                     }
                     Choice(captures, branches) => {
-                        write!(f, ".{{")?;
+                        write!(f, ".{{\n")?;
+                        const TAB: &'static str = "    ";
+                        let prefix = TAB.repeat(*self.1.depth.borrow());
                         for (k, v) in self.1.arena.get(branches.clone()).iter() {
                             write!(
                                 f,
-                                "{} {} ",
+                                "{prefix}{} => {}\n",
                                 self.1.arena.get(k.clone()),
                                 Showable(v, self.1)
                             )?;
                         }
-                        write!(f, "}}${}", Showable(captures, self.1))?;
+                        write!(f, "{prefix}}}${}", Showable(captures, self.1))?;
                     }
                 }
             }
@@ -211,15 +221,46 @@ impl<'a, 'b, A: ArenaLike> std::fmt::Display for Showable<'a, 'b, &'a OnceLock<P
 
 impl<'a, 'b, A: ArenaLike> std::fmt::Display for Showable<'a, 'b, &'a PackageBody, A> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        const TAB: &'static str = "    ";
+        let prefix = TAB.repeat(*self.1.depth.borrow());
+        *self.1.depth.borrow_mut() += 1;
         let package = self.0;
         if package.debug_name.len() > 0 {
-            write!(f, "/* {} */", package.debug_name)?;
+            write!(f, "{prefix}/* {} */\n", package.debug_name)?;
         }
-        write!(f, "@{}", Showable(&package.root, self.1))?;
-        write!(f, "${}", Showable(&package.captures, self.1))?;
+        write!(f, "{prefix}@{}\n", Showable(&package.root, self.1))?;
+        write!(f, "{prefix}{TAB}${}\n", Showable(&package.captures, self.1))?;
         for (a, b) in self.1.arena.get(package.redexes.clone()) {
-            write!(f, "& {} ~ {}", Showable(a, self.1), Showable(b, &self.1))?;
+            write!(
+                f,
+                "{prefix}{TAB}& {}\n{prefix}{TAB}~ {}",
+                Showable(a, self.1),
+                Showable(b, &self.1)
+            )?;
         }
+        *self.1.depth.borrow_mut() -= 1;
         Ok(())
+    }
+}
+
+impl<'a, 'b, A: ArenaLike> std::fmt::Display for Showable<'a, 'b, &'a Instance, A> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let id = self.0.identifier();
+        match self.0.vars.0.try_lock() {
+            Ok(lock) => {
+                write!(f, "Instance@{:x} {{", (id >> 3) & 0xFF)?;
+                for (k, v) in lock.iter().enumerate() {
+                    if let Some(v) = v {
+                        write!(f, "{}: {}, ", k, Showable(v, &self.1))?;
+                    }
+                }
+                write!(f, "}}")?;
+                Ok(())
+            }
+            Err(_) => {
+                write!(f, "<locked>")?;
+                Ok(())
+            }
+        }
     }
 }

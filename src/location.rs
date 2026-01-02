@@ -1,5 +1,8 @@
 use arcstr::ArcStr;
-use std::path::{Path, PathBuf};
+use std::{
+    fmt::Display,
+    path::{Path, PathBuf},
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Hash)]
 pub struct Point {
@@ -113,6 +116,19 @@ impl Span {
                     file: file1,
                 }
             }
+        }
+    }
+}
+
+impl Display for Span {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Span::None => f.write_str("<no span>"),
+            Span::At { start, end, file } => write!(
+                f,
+                "{}: {}:{}..{}:{}",
+                file.0, start.row, start.column, end.row, end.column
+            ),
         }
     }
 }

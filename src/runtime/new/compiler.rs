@@ -46,10 +46,10 @@ macro_rules! err {
 
 macro_rules! tdb {
     ($tab:expr, $fmt:expr, $($arg:tt)*) => {
-        () //eprintln!(concat!("{}", $fmt), " ".repeat($tab * 4), $($arg)*)
+        eprintln!(concat!("{}", $fmt), " ".repeat($tab * 4), $($arg)*)
     };
     ($tab:expr, $fmt:expr) => {
-        () //eprintln!(concat!("{}", $fmt), " ".repeat($tab * 4))
+        eprintln!(concat!("{}", $fmt), " ".repeat($tab * 4))
     };
 }
 #[derive(Clone, Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]
@@ -60,9 +60,13 @@ pub enum Var {
 
 #[derive(Clone, Debug)]
 pub struct VarState {
-    value: Global,
-    /// The list of destinations that will get plugged in to a fanout when the context is closed or the variable is moved out of.
-    destinations: Vec<Global>,
+    /// The value, and The list of destinations that will get plugged in to a fanout when the context is closed or the variable is moved out of.
+    value_dest: Option<(Global, Vec<Global>)>,
+}
+impl VarState {
+    fn add_destination(&mut self, dest: Global) {
+        self.value_dest.as_mut().unwrap().1.push(dest);
+    }
 }
 
 #[derive(Default, Debug)]
@@ -75,8 +79,7 @@ impl Context {
         self.vars.insert(
             var,
             VarState {
-                value: global,
-                destinations: vec![],
+                value_dest: Some((global, vec![])),
             },
         );
     }
@@ -118,6 +121,19 @@ impl Default for PackageState {
     }
 }
 
+impl Display for Context {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for (k, v) in self.vars.iter() {
+            match k {
+                Var::Loop(None) => write!(f, "@ = {v:?}"),
+                Var::Loop(Some(k)) => write!(f, "@{k} = {v:?}"),
+                Var::Name(k) => write!(f, "{k} = {v:?}"),
+            }?;
+        }
+        Ok(())
+    }
+}
+
 impl PackageState {
     pub fn arena(&mut self) -> &mut Arena {
         &mut self.arena
@@ -152,8 +168,7 @@ impl PackageState {
     }
     fn capture(&mut self, captures: &Captures) -> Result<Context> {
         let mut target = Context::default();
-        // TODO: somehow make this close less
-        for (k, v) in self.context.vars.clone() {
+        for (k, mut v) in core::mem::take(&mut self.context.vars) {
             // either move, duplicate, or pass-through
             let do_captures = if let Var::Name(name) = &k {
                 captures.contains(name)
@@ -166,12 +181,16 @@ impl PackageState {
                 true
             };
             if do_captures && do_duplicate {
-                let global = self.add_var_destination(&k)?;
+                let global = self.add_var_destination_inplace(&mut v);
                 target.insert(k.clone(), global);
+                self.close_var(&k);
+                self.context.vars.insert(k.clone(), v);
             } else if do_captures && !do_duplicate {
-                let global = self.add_var_destination(&k)?;
-                self.close_var(&k)?;
+                let global = self.add_var_destination_inplace(&mut v);
+                self.close_var_inner(v);
                 target.insert(k.clone(), global);
+            } else {
+                self.context.vars.insert(k, v);
             };
         }
         Ok(target)
@@ -193,6 +212,10 @@ impl PackageState {
                 .unwrap_or_else(|| panic!("Attempted to pack {:?} but it was not present", k));
             trees.push(self.add_var_destination_inplace(&mut v));
             self.close_var_inner(v);
+        }
+
+        for var in context.vars.into_values() {
+            self.close_var_inner(var);
         }
         self.multiplex_trees(trees)
     }
@@ -227,6 +250,7 @@ impl PackageState {
         self.num_vars += 1;
         ret
     }
+    /// Defines a var, and returns a global which can be used to set it.
     pub fn define_var(&mut self, name: Var) -> Global {
         let _ = self.close_var(&name);
         let (a, b) = self.new_var();
@@ -243,21 +267,21 @@ impl PackageState {
             .vars
             .get_mut(var)
             .expect(&format!("Couldn't find var {:?}", var))
-            .destinations
-            .push(a);
+            .add_destination(a);
         Ok(b)
     }
     fn add_var_destination_inplace(&mut self, var: &mut VarState) -> Global {
         let (a, b) = self.new_var();
-        var.destinations.push(a);
+        var.add_destination(a);
         b
     }
     fn close_var_inner(&mut self, mut var: VarState) {
-        if var.destinations.len() == 1 {
-            self.link(var.value, var.destinations.pop().unwrap());
+        let (value, mut destinations) = var.value_dest.take().unwrap();
+        if destinations.len() == 1 {
+            self.link(value, destinations.pop().unwrap());
         } else {
-            let node = Global::Fanout(self.arena().alloc_clone(&var.destinations));
-            self.link(var.value, node);
+            let node = Global::Fanout(self.arena().alloc_clone(&destinations));
+            self.link(value, node);
         }
     }
     fn close_var(&mut self, var: &Var) -> Result<()> {
@@ -282,19 +306,20 @@ impl PackageState {
         }
     }
     fn show(&self) {
-        use std::fmt::Display;
-        let s = self
-            .context
-            .vars
-            .keys()
-            .map(|x| match x {
-                Var::Loop(None) => format!("@"),
-                Var::Loop(Some(x)) => format!("@{x}"),
-                Var::Name(x) => format!("{x}"),
-            })
-            .collect::<Vec<_>>()
-            .join(" ");
-        tdb!(self.tab_level + 1, "ctx: {}", s)
+        let mut s = String::new();
+        for (a, b) in self.redexes.iter() {
+            use core::fmt::Write;
+            let space = "    ".repeat(self.tab_level + 2);
+            write!(&mut s, "{space}{a:?} ~ {b:?}?\n").unwrap();
+        }
+        tdb!(self.tab_level + 1, "ctx: {} {}", self.context, s)
+    }
+}
+
+impl Drop for VarState {
+    fn drop(&mut self) {
+        // debugging tool; this ensures that varstates are only dropped where they are handled.
+        debug_assert!(self.value_dest.is_none(), "Dropped VarState {:?}", self);
     }
 }
 
@@ -328,11 +353,12 @@ impl Compiler {
     }
     pub fn pop_current(&mut self) -> PackageState {
         let p = self.current.pop().unwrap();
-        self.current().tab_level = p.tab_level;
+        if !self.current.is_empty() {
+            self.current().tab_level = p.tab_level;
+        }
         p
     }
     pub fn current(&mut self) -> &mut PackageState {
-        self.current.last_mut().unwrap().show();
         self.current.last_mut().unwrap()
     }
     pub fn write_arena(&mut self) -> &mut Arena {
@@ -386,6 +412,7 @@ impl Compiler {
         usage: &VariableUsage,
         cmd: &Command<Type>,
     ) -> Result<()> {
+        self.current().show();
         match cmd {
             Command::Link(expr) => {
                 tdb!(self.current().tab_level, "link {}", subject);
@@ -439,6 +466,7 @@ impl Compiler {
                     // but this is not necessary
                     // and leads to increased compilation times
                     self.push_current(base_num_vars);
+                    let name_old = name;
                     let name = self.intern(name.string.as_str());
 
                     let (c0, c1) = self.current().new_var();
@@ -449,7 +477,13 @@ impl Compiler {
                     self.compile_process(span, proc)?;
                     self.exit();
                     let current = self.pop_current();
-                    let package = self.finalize_package(current, root, c1, base_num_vars);
+                    let package = self.finalize_package(
+                        current,
+                        root,
+                        c1,
+                        base_num_vars,
+                        format!("case branch {name_old} at {span}"),
+                    );
                     branches.push((name, package.body));
                     max_num_vars = max_num_vars.max(package.num_vars);
                     //self.pop_current();
@@ -468,7 +502,13 @@ impl Compiler {
                     self.exit();
 
                     let current = self.pop_current();
-                    let package = self.finalize_package(current, root, c1, base_num_vars);
+                    let package = self.finalize_package(
+                        current,
+                        root,
+                        c1,
+                        base_num_vars,
+                        format!("else branch at {span}"),
+                    );
                     branches.push((name, package.body));
                     max_num_vars = max_num_vars.max(package.num_vars);
                     //self.pop_current();
@@ -500,24 +540,37 @@ impl Compiler {
                 body,
             } => {
                 tdb!(self.current().tab_level, "{}.begin@{:?}", subject, label);
+                self.enter();
                 let driver = self
                     .current()
                     .get_var(&Var::Name(subject.clone()), &VariableUsage::Move)?;
+                tdb!(
+                    self.current().tab_level,
+                    "got the driver; it's {:?}",
+                    driver
+                );
                 let loop_var = self.current().define_var(Var::Loop(label.clone()));
 
+                tdb!(
+                    self.current().tab_level,
+                    "defined the loop variable; it's {:?}",
+                    loop_var
+                );
                 let package_place = self.alloc(OnceLock::new());
                 let context = self.current().capture(&captures)?;
-                println!("Context in begin: {context:?}");
                 let (captures, pack) = self.current().pack(context);
                 self.current()
                     .loop_points
                     .insert(label.clone(), pack.clone());
 
+                tdb!(self.current().tab_level, "compiling subprocess...",);
                 self.push_current(0);
                 let (captures_inner, cx) = self.current().new_var();
                 self.current().unpack_self(cx, &pack);
                 let root_inner = self.current().define_var(Var::Name(subject.clone()));
+                self.exit();
                 self.compile_process(span, body)?;
+                self.enter();
                 let root_inner = Global::Destruct(GlobalCont::Par(
                     self.alloc(captures_inner),
                     self.alloc(root_inner),
@@ -528,6 +581,7 @@ impl Compiler {
                     root_inner,
                     Global::Destruct(GlobalCont::Continue),
                     0,
+                    format!("begin body at {span}"),
                 );
                 self.write_arena().get(package_place).set(package).unwrap();
 
@@ -538,25 +592,40 @@ impl Compiler {
                     self.alloc(Global::Value(Value::Break)),
                     FanBehavior::Propagate,
                 );
-                self.current().link(loop_var, package_global.clone());
+                let package_global_2 = Global::Package(
+                    package_place,
+                    self.alloc(Global::Value(Value::Break)),
+                    FanBehavior::Propagate,
+                );
+
+                tdb!(self.current().tab_level, "linking loop var to package",);
+                self.current().link(loop_var, package_global_2);
+
+                tdb!(self.current().tab_level, "linking begin body to package",);
                 self.current()
                     .link(package_global, Global::Value(Value::Pair(captures, driver)));
                 self.current().close_all_vars();
+                self.exit();
             }
             Command::Loop(label, driver, captures) => {
-                tdb!(self.current().tab_level, "{}.loop@{:?}", driver, label);
-                let loop_package = self
-                    .current()
-                    .get_var(&Var::Loop(label.clone()), &VariableUsage::Copy)?;
+                tdb!(
+                    self.current().tab_level,
+                    "{} {}.loop@{:?}",
+                    subject,
+                    driver,
+                    label
+                );
                 let pack_data = self.current().loop_points.get(label).unwrap().clone();
                 let driver = self.current().get_var(&Var::Name(subject.clone()), usage)?;
-
                 let context = self.current().capture(&captures)?;
-                println!("Context in loop: {context:?}");
                 let captures = self.current().pack_with_shape(context, &pack_data);
 
                 let captures = self.alloc(captures);
                 let driver = self.alloc(driver);
+                println!("Getting {label:?}");
+                let loop_package = self
+                    .current()
+                    .get_var(&Var::Loop(label.clone()), &VariableUsage::Copy)?;
                 self.current()
                     .link(loop_package, Global::Value(Value::Pair(captures, driver)));
                 self.current().close_all_vars();
@@ -584,7 +653,8 @@ impl Compiler {
                 self.enter();
                 let expr = self.compile_expression(span, &value)?;
                 self.exit();
-                self.current().context.insert(Var::Name(name.clone()), expr);
+                self.current()
+                    .define_var_known(Var::Name(name.clone()), expr);
                 self.compile_process(span, then)?;
             }
             Process::Do {
@@ -598,7 +668,6 @@ impl Compiler {
             }
             Process::Telltypes(span, process) => todo!(),
             Process::Block(span, index, body, process) => {
-                println!("{index} {process:?}");
                 let prev = self.blocks.insert(*index, body.clone());
                 self.compile_process(span, process)?;
                 match prev {
@@ -611,7 +680,6 @@ impl Compiler {
                 }
             }
             Process::Goto(_, index, _) => {
-                println!("{index}");
                 let body = self
                     .blocks
                     .get(index)
@@ -645,7 +713,8 @@ impl Compiler {
                 let root = self.compile_expression(&span, &root)?;
 
                 let current = self.pop_current();
-                let package = self.finalize_package(current, root, b, 0);
+                let package =
+                    self.finalize_package(current, root, b, 0, format!("box expression at {span}"));
                 let package = OnceLock::from(package);
                 let package = self.alloc(package);
 
@@ -683,6 +752,7 @@ impl Compiler {
         root: Global,
         captures: Global,
         out_num_vars: usize,
+        debug_name: String,
     ) -> Package {
         current.close_all_vars();
         let num_vars = current.num_vars;
@@ -740,6 +810,7 @@ impl Compiler {
             })
             .collect();
         let redexes = freezer.write.alloc_clone(redexes.as_ref());
+        freezer.verify();
         // readback root, captures, and redexes into the arena
         // (now that it's pre-reduced)
         //
@@ -749,7 +820,7 @@ impl Compiler {
             body: PackageBody {
                 root,
                 captures,
-                debug_name: String::new(),
+                debug_name,
                 redexes,
             },
         };
@@ -770,10 +841,16 @@ impl Compiler {
             self.push_current(0);
             let root = self.compile_expression(&v.span, &v.expression)?;
             let current = self.pop_current();
-            let package =
-                self.finalize_package(current, root, Global::Destruct(GlobalCont::Continue), 0);
+            let package = self.finalize_package(
+                current,
+                root,
+                Global::Destruct(GlobalCont::Continue),
+                0,
+                format!("global definition {k}"),
+            );
             let package_destination = self.definition_packages.get(k).unwrap();
             self.get(*package_destination).set(package).unwrap();
+            println!("{}", self.current.len());
         }
         Ok(())
     }
@@ -781,8 +858,9 @@ impl Compiler {
 
 fn compile_file(program: &CheckedModule) -> Result<Compiler> {
     let mut compiler = Compiler::default();
-    compiler.push_current(0);
     compiler.compile_definitions(&program.definitions)?;
+
+    assert!(compiler.current.len() == 0, "{:?}", compiler.current);
     Ok(compiler)
 }
 
@@ -804,7 +882,7 @@ impl Compiled {
         module: &crate::par::program::CheckedModule,
     ) -> core::result::Result<Self, crate::runtime::RuntimeCompilerError> {
         let type_defs = module.type_defs.clone();
-        let mut compiler = compile_file(module).unwrap();
+        let compiler = compile_file(module).unwrap();
         let mut arena = compiler.permanent;
         let mut closure = |ty: &Type| {
             fn helper(
