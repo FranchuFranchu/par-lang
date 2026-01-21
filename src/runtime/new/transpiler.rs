@@ -7,8 +7,6 @@ use super::readback::Handle;
 use super::reducer::NetHandle;
 use crate::par::types::{visit, Type, TypeDefs, TypeError};
 
-use std::sync::OnceLock;
-
 use crate::par::language::GlobalName;
 use crate::runtime::new::arena::{Arena, Index};
 use crate::runtime::new::reducer::Reducer;

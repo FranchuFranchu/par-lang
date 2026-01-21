@@ -86,7 +86,7 @@ impl<'a> Freezer<'a> {
                     })
                     .unwrap(),
             ),
-            Linear::Request(sender) => panic!("attempted to freeze `Linear::Request`"),
+            Linear::Request(_) => panic!("attempted to freeze `Linear::Request`"),
             Linear::ShareHole(mutex) => {
                 todo!(); // we still have to add them from the Shared side.
                 let mut lock = mutex.lock().unwrap();

@@ -27,7 +27,6 @@ use crate::{
                 Global, GlobalCont, Instance, Linker, Node, Package, PackageBody, PackagePtr,
                 Runtime, Value,
             },
-            show::{Showable, Shower},
         },
         old::net::FanBehavior,
     },
@@ -784,7 +783,6 @@ impl Compiler {
                 Node::Global(instance.clone(), b),
             );
         }
-        let mut t = Instant::now();
         let redexes: Vec<_> = std::iter::from_fn(|| runtime.reduce())
             .map(|(a, b)| (Node::Linear(a.into()), b))
             .collect();
