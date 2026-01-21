@@ -182,12 +182,6 @@ Now the receiver has a new guarantee — it no longer has to consider the sender
 Together with Par’s imposition of a tree-like communication structure — <strong>ruling out deadlocks</strong> — a new
 promising way of building concurrent applications arises.</p>
 <p>But, Par isn’t just a concurrent language.</p>
-<blockquote>
-<p>In fact, real-world applications of Par’s concurrency are still
-very limited, due to a lack of non-determinism, and poor I/O libraries. That’s because Par is
-<strong>very new,</strong> but we’re working hard to bring both of these to a better state.</p>
-<p>Yet, Par is still interesting for other reasons.</p>
-</blockquote>
 <p>Classical linear logic is a beast, and a powerful one
 at that. Par absorbs all this power into its own expressivity. With <a href="./processes/duality.html"><strong>duality,</strong></a>
 <strong>session types,</strong> and a rich set of concepts all mapping to logical connectives,
@@ -432,7 +426,7 @@ the <em>primitives.</em></p>
 <ul>
 <li><strong><code>Int</code></strong> — Integers, positive and negative whole numbers, arbitrary size.</li>
 <li><strong><code>Nat</code></strong> — Natural numbers, starting from zero, arbitrary size. They are a subtype of <code>Int</code>.</li>
-<li><strong><code>String</code></strong> — UTF-8 encoded sequence of Unicode characters.</li>
+<li><strong><code>String</code></strong> — UTF-8 encoded sequence of Unicode characters. They are a subtype of <code>Bytes</code>.</li>
 <li><strong><code>Char</code></strong> — Singular Unicode character. They are a subtype of <code>String</code>.</li>
 <li><strong><code>Byte</code></strong> — Singular data unit that consists of eight bits. They are a subtype of <code>Bytes</code>.</li>
 <li><strong><code>Bytes</code></strong> — Contiguous-in-memory sequence of bytes.</li>
@@ -555,7 +549,7 @@ def Str5 = Int.ToString(-7)  // = "-7"
 <p>Note, that <code>Nat</code> is a subtype of <code>Int</code>, so any natural number can also be converted to a string
 this way, too. In fact, that’s exactly what happens with <code>Str4</code>.</p>
 <h2 id="char"><a class="header" href="#char"><code>Char</code></a></h2>
-<p>A <code>Char</code> is a single Unicode character. <code>Char</code> literals are enclosed in single quotes:</p>
+<p>A <code>Char</code> is a single Unicode character. <code>Char</code> literals are single characters enclosed in double quotes:</p>
 <pre><code class="language-par">def Char1 = "a"  // inferred as `Char`
 def Char2 = "\n"
 </code></pre>
@@ -585,8 +579,7 @@ def Byte2 = &lt;&lt;321&gt;&gt;  // out-of-bounds values are automatically wrapp
 <p><code>Bytes</code> are sequences of zero or more bytes, laid out contiguously in memory in order to take the least possible amount of space. Their literals are similar to those of <code>Byte</code>s, except
 that multiple decimal values are allowed, and are delimited by spaces:</p>
 <pre><code class="language-par">def Bytes1 = &lt;&lt;65 91&gt;&gt;  // inferred as `Bytes`
-def Bytes2 = &lt;&lt; &gt;&gt;      // zero-byte sequence
-// def Bytes3 = &lt;&lt;&gt;&gt;    // This triggers syntax error for now, but we intend to fix it
+def Bytes2 = &lt;&lt;&gt;&gt;       // zero-byte sequence
 </code></pre>
 <p>A <code>Bytes</code> can also be broken down to a list of <code>Byte</code>s:</p>
 <pre><code class="language-par">dec Bytes : [Bytes] List&lt;Byte&gt;
@@ -595,6 +588,7 @@ def Bytes = [bs] Bytes.Reader(bs).begin.byte.case {
   .byte(b) rest =&gt; .item(b) rest.loop,
 }
 </code></pre>
+<p>It’s also important to remember, that <code>String</code> is a subtype of <code>Bytes</code> and so any <code>String</code> value can be used wherever <code>Bytes</code> is expected.</p>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="the-let-expression"><a class="header" href="#the-let-expression">The <code>let</code> Expression</a></h1>
 <p>Just one last stop before setting on a tour through Par’s types and their expressions: the <code>let</code>
 expression. It’s for assigning a variable and using it in another expression.</p>
@@ -797,6 +791,7 @@ let num = value
 <pre><code class="language-par">/// Nat
 
 dec Nat.Add   : [Nat, Nat] Nat
+dec Nat.Sub   : [Nat, Int] Nat
 dec Nat.Mul   : [Nat, Nat] Nat
 dec Nat.Div   : [Nat, Nat] Nat
 dec Nat.Mod   : [Nat, Nat] Nat
@@ -869,11 +864,13 @@ type Result&lt;e, a&gt; = either {
   .err e,
 }
 
-dec Result.Always : [type a] [Result&lt;either {}, a&gt;] a
-def Result.Always = [type a] [result] result.case {
+dec Result.Always : &lt;a&gt;[Result&lt;either {}, a&gt;] a
+def Result.Always = &lt;a&gt;[result] result.case {
   .ok value =&gt; value,
   .err impossible =&gt; impossible.case {},
 }
+
+type Option&lt;a&gt; = Result&lt;!, a&gt;
 
 
 /// List
@@ -888,16 +885,263 @@ type List.Builder&lt;a&gt; = iterative choice {
   .build =&gt; List&lt;a&gt;,
 }
 
+type List.Result&lt;e, a&gt; = recursive either {
+  .end Result&lt;e, !&gt;,
+  .item(a) self,
+}
+
 dec List.Builder : [type a] List.Builder&lt;a&gt;
 def List.Builder = [type a]
   let append: [List&lt;a&gt;] List&lt;a&gt; = [xs] xs
   in begin case {
-    .add(x) =&gt;
-      let append: [List&lt;a&gt;] List&lt;a&gt;
-        = [xs] append(.item(x) xs)
-      in loop,
+    .add(x) =&gt; let append = [xs: List&lt;a&gt;] append(.item(x) xs) in loop,
     .build =&gt; append(.end!),
   }
+
+dec List.Find : &lt;a&gt;[List&lt;box a&gt;] [box [box a] Bool] Option&lt;a&gt;
+def List.Find = &lt;a&gt;[list] [f] list.begin.case {
+  .end! =&gt; .err!,
+  .item(v) list =&gt; f(v).case {
+    .true! =&gt; .ok v,
+    .false! =&gt; list.loop,
+  },
+}
+
+dec List.FindLast : &lt;a&gt;[List&lt;box a&gt;] [box [box a] Bool] Option&lt;a&gt;
+def List.FindLast = &lt;a&gt;[list] [f]
+  let result: Option&lt;box a&gt; = .err! in
+  list.begin.case {
+    .end! =&gt; result,
+    .item(v) list =&gt; f(v).case {
+      .true! =&gt; let result = .ok v in list.loop,
+      .false! =&gt; list.loop,
+    },
+  }
+
+dec List.Map : &lt;a&gt;[List&lt;a&gt;] [type b] [box [a] b] List&lt;b&gt;
+def List.Map = &lt;a&gt;[list] [type b] [f] list.begin.case {
+  .end! =&gt; .end!
+  .item(v) list =&gt; .item(f(v)) list.loop,
+}
+
+dec List.FlatMap : &lt;a&gt;[List&lt;a&gt;] [type b] [box [a] List&lt;b&gt;] List&lt;b&gt;
+def List.FlatMap = &lt;a&gt;[list] [type b] [f] list.begin.case {
+  .end! =&gt; .end!,
+  .item(v) list =&gt; f(v).begin@flat.case {
+    .end! =&gt; list.loop,
+    .item(v) flat =&gt; .item(v) flat.loop@flat,
+  },
+}
+
+dec List.Filter : &lt;a&gt;[List&lt;box a&gt;] [box [box a] Bool] List&lt;a&gt;
+def List.Filter = &lt;a&gt;[list] [f] list.begin.case {
+  .end! =&gt; .end!,
+  .item(v) list =&gt; f(v).case {
+    .true! =&gt; .item(v) list.loop,
+    .false! =&gt; list.loop,
+  },
+}
+
+dec List.Fold : &lt;a&gt;[List&lt;a&gt;] &lt;r&gt;[r] [box [r, a] r] r
+def List.Fold = &lt;a&gt;[list] &lt;r&gt;[result] [f] list.begin.case {
+  .end! =&gt; result,
+  .item(v) list =&gt; let result = f(result, v) in list.loop,
+}
+
+dec List.Reduce : &lt;a&gt;[List&lt;a&gt;] [box [a, a] a] Option&lt;a&gt;
+def List.Reduce = &lt;a&gt;[list] [f] list.case {
+  .end! =&gt; .err!,
+  .item(result) list =&gt; .ok List.Fold(list, result, f),
+}
+
+dec List.Length : &lt;a&gt;[List&lt;box a&gt;] Nat
+def List.Length = &lt;a&gt;[list]
+  let len = 0 in
+  list.begin.case {
+    .end! =&gt; len,
+    .item(_) list =&gt; do { len-&gt;Nat.Add(1) } in list.loop,
+  }
+
+dec List.Concat : &lt;a&gt;[List&lt;List&lt;a&gt;&gt;] List&lt;a&gt;
+def List.Concat = &lt;a&gt;[lists] chan yield {
+  lists.begin.case {
+    .item(list) =&gt; {
+      yield-&gt;List.Copy(list)
+      lists.loop
+    }
+    .end! =&gt; {
+      yield.end!
+    }
+  }
+}
+
+dec List.Copy : &lt;a&gt;[dual List&lt;a&gt;] [List&lt;a&gt;] dual List&lt;a&gt;
+def List.Copy = &lt;a&gt;[dst] [src] do {
+  src.begin.case {
+    .end! =&gt; {},
+    .item(v) src =&gt; {
+      dst.item(v)
+      src.loop
+    },
+  }
+} in dst
+
+dec List.MinMax : &lt;a&gt;[List&lt;box a&gt;] [box [box a, box a] Ordering] Option&lt;(a) a&gt;
+def List.MinMax = &lt;a&gt;[list] [cmp]
+  let result: Option&lt;(box a) box a&gt; = .err! in
+  list.begin.case {
+    .end! =&gt; result,
+    .item(v) list =&gt; result.case {
+      .err! =&gt;
+        let result = .ok(v) v in
+        list.loop,
+      .ok(min) max =&gt;
+        let result = cmp(v, min).case {
+          .less! =&gt; .ok (v) max,
+          else _ =&gt; cmp(v, max).case {
+            .greater! =&gt; .ok (min) v,
+            else _ =&gt; result,
+          },
+        } in list.loop,
+    },
+  }
+
+dec List.Min : &lt;a&gt;[List&lt;box a&gt;] [box [box a, box a] Ordering] Option&lt;a&gt;
+def List.Min = &lt;a&gt;[list] [cmp]
+  List.MinMax(list, cmp).case {
+    .err! =&gt; .err!,
+    .ok(min) _ =&gt; .ok min,
+  }
+
+dec List.Max : &lt;a&gt;[List&lt;box a&gt;] [box [box a, box a] Ordering] Option&lt;a&gt;
+def List.Max = &lt;a&gt;[list] [cmp]
+  List.MinMax(list, cmp).case {
+    .err! =&gt; .err!,
+    .ok(_) max =&gt; .ok max,
+  }
+
+dec List.Zip : &lt;a&gt;[List&lt;box a&gt;] &lt;b&gt;[List&lt;box b&gt;] List&lt;(a) b&gt;
+def List.Zip = &lt;a&gt;[list1] &lt;b&gt;[list2] chan yield {
+  list1.begin.case {
+    .end! =&gt; { yield.end! },
+    .item(v1) list1 =&gt; {
+      list2.case {
+        .end! =&gt; { yield.end! },
+        .item(v2) list2 =&gt; {
+          yield.item((v1) v2)
+          list1.loop
+        },
+      }
+    },
+  }
+}
+
+dec List.Unzip : &lt;a, b&gt;[List&lt;(a) b&gt;] (List&lt;a&gt;) List&lt;b&gt;
+def List.Unzip = &lt;a, b&gt;[list] do {
+  let list1 = List.Builder(type a)
+  let list2 = List.Builder(type b)
+
+  list.begin.case {
+    .end! =&gt; {},
+    .item((v1) v2) list =&gt; {
+      list1.add(v1)
+      list2.add(v2)
+      list.loop
+    },
+  }
+} in (list1.build) list2.build
+
+dec List.All : &lt;a&gt;[List&lt;box a&gt;] [box [box a] Bool] Bool
+def List.All = &lt;a&gt;[list] [f]
+  list.begin.case {
+    .end! =&gt; .true!,
+    .item(v) list =&gt; f(v).case {
+      .true! =&gt; list.loop,
+      .false! =&gt; .false!,
+    },
+  }
+
+dec List.Any : &lt;a&gt;[List&lt;box a&gt;] [box [box a] Bool] Bool
+def List.Any = &lt;a&gt;[list] [f] List.All(list, box [v] f(v).case {
+  .true! =&gt; .false!,
+  .false! =&gt; .true!,
+})
+
+dec List.Dedup : &lt;a&gt;[List&lt;box a&gt;] [box [box a, box a] Bool] List&lt;a&gt;
+def List.Dedup = &lt;a&gt;[list] [eq]
+  list.case {
+    .end! =&gt; .end!,
+    .item(prev) list =&gt; .item(prev)
+      list.begin.case {
+        .end! =&gt; .end!,
+        .item(v) list =&gt; eq(prev, v).case {
+          .true! =&gt; list.loop,
+          .false! =&gt;
+            let prev = v in
+            .item(v) list.loop,
+        }
+      }
+  }
+
+dec List.Take : &lt;a&gt;[List&lt;box a&gt;] [Nat] List&lt;a&gt;
+def List.Take = &lt;a&gt;[list] [n]
+  Nat.Repeat(n).begin.case {
+    .end! =&gt; .end!,
+    .step next =&gt; list.case {
+      .end! =&gt; .end!
+      .item(v) list =&gt; .item(v) next.loop,
+    }
+  }
+
+dec List.Drop : &lt;a&gt;[List&lt;box a&gt;] [Nat] List&lt;a&gt;
+def List.Drop = &lt;a&gt;[list] [n]
+  Nat.Repeat(n).begin.case {
+    .end! =&gt; list,
+    .step next =&gt; list.case {
+      .end! =&gt; .end!,
+      .item(_) list =&gt; next.loop,
+    },
+  }
+
+dec List.Chunk : &lt;a&gt;[List&lt;a&gt;] [Nat] List&lt;List&lt;a&gt;&gt;
+def List.Chunk = &lt;a&gt;[list] [n] chan outer {
+  let inner: Option&lt;List.Builder&lt;a&gt;&gt; = .err!
+  let i = 0
+
+  list.begin.case {
+    .end! =&gt; {
+      inner.case {
+        .err! =&gt; {},
+        .ok builder =&gt; { outer.item(builder.build) },
+      }
+      outer.end!
+    },
+    .item(v) list =&gt; {
+      inner.case {
+        .err! =&gt; {
+          let inner = .ok List.Builder(type a).add(v)
+        },
+        .ok builder =&gt; {
+          let inner = .ok builder.add(v)
+        },
+      }
+      i-&gt;Nat.Add(1)
+      Nat.Equals(i, n).case {
+        .true! =&gt; {
+          inner.case {
+            .ok builder =&gt; { outer.item(builder.build) },
+          }
+          let inner = .err!
+          let i = 0
+          list.loop
+        },
+        .false! =&gt; {
+          list.loop
+        },
+      }
+    },
+  }
+}
 
 
 /// Ordering
@@ -935,21 +1179,21 @@ type String.Builder = iterative choice {
   .build =&gt; String,
 }
 
-type String.Parser&lt;errIn, errOut&gt; = recursive iterative/attempt choice {
-  .close(Result&lt;errIn, !&gt;) =&gt; Result&lt;errOut, !&gt;,
-  .remainder =&gt; Result&lt;errOut, String&gt;,
+type String.Parser&lt;e&gt; = recursive iterative@attempt choice {
+  .close =&gt; Result&lt;e, !&gt;,
+  .remainder =&gt; Result&lt;e, String&gt;,
   .char =&gt; either {
-    .end Result&lt;errOut, !&gt;,
+    .end Result&lt;e, !&gt;,
     .char(Char) self,
   },
   .match(String.Pattern, String.Pattern) =&gt; either {
-    .end Result&lt;errOut, !&gt;,
-    .fail self/attempt,
+    .end Result&lt;e, !&gt;,
+    .fail self@attempt,
     .match(String, String) self,
   },
   .matchEnd(String.Pattern, String.Pattern) =&gt; either {
-    .end Result&lt;errOut, !&gt;,
-    .fail self/attempt,
+    .end Result&lt;e, !&gt;,
+    .fail self@attempt,
     .match(String, String)!,
   },
 }
@@ -971,10 +1215,47 @@ type String.Pattern = recursive either {
 dec String.Quote     : [String] String
 dec String.FromBytes : [Bytes] String
 
-dec String.Builder : String.Builder
-dec String.Parse   : [String] String.Parser&lt;either{}, either{}&gt;
+dec String.Equals    : [String, String] Bool
+dec String.Compare   : [String, String] Ordering
 
-dec String.ParseReader : [type errIn, errOut] [Bytes.Reader&lt;errIn, errOut&gt;] String.Parser&lt;errIn, errOut&gt;
+dec String.Builder : String.Builder
+dec String.Parser  : [String] String.Parser&lt;either {}&gt;
+
+dec String.ParserFromReader : &lt;e&gt;[Bytes.Reader&lt;e&gt;] String.Parser&lt;e&gt;
+
+dec String.Lines : &lt;e&gt;[String.Parser&lt;e&gt;] List.Result&lt;e, String&gt;
+def String.Lines = &lt;e&gt;[parser]
+  catch e =&gt; .end .err e in
+  parser.begin.match(.repeat.one.any!, .str "\n").case {
+    .end try ! =&gt; .end .ok!,
+    .fail parser =&gt; let try r = parser.remainder in .item(r) .end .ok!,
+    .match(line, _) parser =&gt; .item(line) parser.loop,
+  }
+
+dec String.Join : [List&lt;String&gt;, String] String
+def String.Join = [list, sep]
+  let builder = String.Builder in
+  list.case {
+    .end! =&gt; builder.build,
+    .item(v) list =&gt; do {
+      builder.add(v)
+    } in list.begin.case {
+      .end! =&gt; builder.build,
+      .item(v) list =&gt; do {
+        builder.add(sep).add(v)
+      } in list.loop,
+    },
+  }
+
+dec String.Concat : [List&lt;String&gt;] String
+def String.Concat = [list]
+  let builder = String.Builder in
+  list.begin.case {
+    .end! =&gt; builder.build,
+    .item(v) list =&gt; do {
+      builder.add(v)
+    } in list.loop,
+  }
 
 
 /// Byte
@@ -997,36 +1278,35 @@ type Bytes.Builder = iterative choice {
   .build =&gt; Bytes,
 }
 
-type Bytes.Reader&lt;errIn, errOut&gt; = recursive choice {
-  .close(Result&lt;errIn, !&gt;) =&gt; Result&lt;errOut, !&gt;,
-  .read =&gt; Result&lt;errOut, either {
+type Bytes.Reader&lt;e&gt; = recursive choice {
+  .close =&gt; Result&lt;e, !&gt;,
+  .read =&gt; Result&lt;e, either {
     .end!,
     .chunk(Bytes) self,
   }&gt;,
 }
 
-type Bytes.Writer&lt;errIn, errOut&gt; = iterative choice {
-  .close(Result&lt;errIn, !&gt;) =&gt; Result&lt;errOut, !&gt;,
-  .flush =&gt; Result&lt;errOut, self&gt;,
-  .write(Bytes) =&gt; Result&lt;errOut, self&gt;,
-  .writeString(String) =&gt; Result&lt;errOut, self&gt;,
+type Bytes.Writer&lt;e&gt; = iterative choice {
+  .close =&gt; Result&lt;e, !&gt;,
+  .flush =&gt; Result&lt;e, self&gt;,
+  .write(Bytes) =&gt; Result&lt;e, self&gt;,
 }
 
-type Bytes.Parser&lt;errIn, errOut&gt; = recursive iterative/attempt choice {
-  .close(Result&lt;errIn, !&gt;) =&gt; Result&lt;errOut, !&gt;,
-  .remainder =&gt; Result&lt;errOut, Bytes&gt;,
+type Bytes.Parser&lt;e&gt; = recursive iterative@attempt choice {
+  .close =&gt; Result&lt;e, !&gt;,
+  .remainder =&gt; Result&lt;e, Bytes&gt;,
   .byte =&gt; either {
-    .end Result&lt;errOut, !&gt;,
+    .end Result&lt;e, !&gt;,
     .byte(Byte) self,
   },
   .match(Bytes.Pattern, Bytes.Pattern) =&gt; either {
-    .end Result&lt;errOut, !&gt;,
-    .fail self/attempt,
+    .end Result&lt;e, !&gt;,
+    .fail self@attempt,
     .match(Bytes, Bytes) self,
   },
   .matchEnd(Bytes.Pattern, Bytes.Pattern) =&gt; either {
-    .end Result&lt;errOut, !&gt;,
-    .fail self/attempt,
+    .end Result&lt;e, !&gt;,
+    .fail self@attempt,
     .match(Bytes, Bytes)!,
   },
 }
@@ -1045,12 +1325,17 @@ type Bytes.Pattern = recursive either {
   .or List&lt;self&gt;,
 }
 
-dec Bytes.FromString : [String] Bytes
-
+dec Bytes.Equals  : [Bytes, Bytes] Bool
+dec Bytes.Compare : [Bytes, Bytes] Ordering
+dec Bytes.Length  : [Bytes] Nat
 dec Bytes.Builder : Bytes.Builder
-dec Bytes.Parse   : [Bytes] Bytes.Parser&lt;either{}, either{}&gt;
+dec Bytes.Reader  : [Bytes] Bytes.Reader&lt;either {}&gt;
+dec Bytes.Parser  : [Bytes] Bytes.Parser&lt;either {}&gt;
 
-dec Bytes.ParseReader : [type errIn, errOut] [Bytes.Reader&lt;errIn, errOut&gt;] Bytes.Parser&lt;errIn, errOut&gt;
+dec Bytes.EmptyReader      : Bytes.Reader&lt;either {}&gt;
+dec Bytes.ParserFromReader : &lt;e&gt;[Bytes.Reader&lt;e&gt;] Bytes.Parser&lt;e&gt;
+
+dec Bytes.PipeReader : [type e] [[Bytes.Writer&lt;!&gt;] Result&lt;e, !&gt;] Bytes.Reader&lt;e&gt;
 
 
 /// Console
@@ -1058,7 +1343,7 @@ dec Bytes.ParseReader : [type errIn, errOut] [Bytes.Reader&lt;errIn, errOut&gt;]
 type Console = iterative choice {
   .close =&gt; !,
   .print(String) =&gt; self,
-  .prompt(String) =&gt; (Result&lt;!, String&gt;) self,
+  .prompt(String) =&gt; (Option&lt;String&gt;) self,
 }
 
 dec Console.Open : Console
@@ -1067,80 +1352,128 @@ dec Console.Open : Console
 /// Os
 
 type Os.Error  = String
-type Os.Reader = Bytes.Reader&lt;either{}, Os.Error&gt;
-type Os.Writer = Bytes.Writer&lt;either{}, Os.Error&gt;
+type Os.Reader = Bytes.Reader&lt;Os.Error&gt;
+type Os.Writer = Bytes.Writer&lt;Os.Error&gt;
 
-type Os.Path = iterative/append recursive/parent box choice {
-  .stringName =&gt; String,
-  .bytesName =&gt; Bytes,
-  .stringAbsolute =&gt; String,
-  .bytesAbsolute =&gt; Bytes,
-  .stringParts =&gt; List&lt;String&gt;,
-  .bytesParts =&gt; List&lt;Bytes&gt;,
+type Os.Path = iterative@append recursive@parent box choice {
+  .name =&gt; Bytes,
+  .absolute =&gt; Bytes,
+  .parts =&gt; List&lt;Bytes&gt;,
 
-  .parent =&gt; Result&lt;!, self/parent&gt;,
-  .appendString(String) =&gt; self/append,
-  .appendBytes(Bytes) =&gt; self/append,
-
-  .openFile =&gt; Result&lt;Os.Error, Os.Reader&gt;,
-  .createOrReplaceFile =&gt; Result&lt;Os.Error, Os.Writer&gt;,
-  .createNewFile =&gt; Result&lt;Os.Error, Os.Writer&gt;,
-  .appendToFile =&gt; Result&lt;Os.Error, Os.Writer&gt;,
-  .createOrAppendToFile =&gt; Result&lt;Os.Error, Os.Writer&gt;,
-
-  .listDir =&gt; Result&lt;Os.Error, List&lt;self/append&gt;&gt;,
-  .traverseDir =&gt; Result&lt;Os.Error, recursive/tree either {
-    .end!,
-    .file(self/append) self/tree,
-    .dir(self/append, self/tree) self/tree,
-  }&gt;,
-  .createDir =&gt; Result&lt;Os.Error, !&gt;,
+  .parent =&gt; Option&lt;self@parent&gt;,
+  .append(Bytes) =&gt; self@append,
 }
 
-dec Os.PathFromString : [String] Os.Path
-dec Os.PathFromBytes  : [Bytes] Os.Path
+dec Os.Path : [Bytes] Os.Path
 
 dec Os.Stdin  : Os.Reader
 dec Os.Stdout : Os.Writer
+dec Os.Stderr : Os.Writer
+
+dec Os.OpenFile             : [Os.Path] Result&lt;Os.Error, Os.Reader&gt;
+dec Os.CreateOrReplaceFile  : [Os.Path] Result&lt;Os.Error, Os.Writer&gt;
+dec Os.CreateNewFile        : [Os.Path] Result&lt;Os.Error, Os.Writer&gt;
+dec Os.AppendToFile         : [Os.Path] Result&lt;Os.Error, Os.Writer&gt;
+dec Os.CreateOrAppendToFile : [Os.Path] Result&lt;Os.Error, Os.Writer&gt;
+
+dec Os.CreateDir   : [Os.Path] Result&lt;Os.Error, !&gt;
+dec Os.ListDir     : [Os.Path] Result&lt;Os.Error, List&lt;Os.Path&gt;&gt;
+dec Os.TraverseDir : [Os.Path] Result&lt;Os.Error, recursive either {
+  .end!,
+  .file(Os.Path) self,
+  .dir(Os.Path, self) self,
+}&gt;
+
+dec Os.Env : BoxMap.Readonly&lt;Bytes, Bytes&gt;
+
+/// Url
+
+type Url.Error = String
+
+type Url = iterative box choice {
+  .full =&gt; String,
+  .protocol =&gt; String,
+  .host =&gt; String,
+  .path =&gt; String,
+  .query =&gt; List&lt;(String) String&gt;,
+  .appendPath(String) =&gt; self,
+  .addQuery(String, String) =&gt; self,
+}
+
+dec Url.FromString : [String] Result&lt;Url.Error, Url&gt;
 
 
 /// Http
 
 type Http.Error  = String
-type Http.Reader = Bytes.Reader&lt;either{}, Http.Error&gt;
-type Http.Writer = Bytes.Writer&lt;either{}, Http.Error&gt;
 
-dec Http.Request :
-  [String, String, List&lt;(String) String&gt;]
-  [[Http.Writer] Result&lt;Http.Error, !&gt;]
-  Result&lt;Http.Error, (Nat, List&lt;(String) String&gt;) Http.Reader&gt;
+type Http.Request =
+  (String)
+  (Url)
+  (List&lt;(String) Bytes&gt;)
+  Bytes.Reader&lt;Http.Error&gt;
+
+type Http.Response =
+  (Nat)
+  (List&lt;(String) Bytes&gt;)
+  Bytes.Reader&lt;Http.Error&gt;
+
+dec Http.Fetch : [Http.Request] Result&lt;Http.Error, Http.Response&gt;
+
+dec Http.Listen : [String] recursive either {
+  .shutdown Result&lt;Http.Error, !&gt;,
+  .incoming(Http.Request, [Http.Response] Result&lt;Http.Error, !&gt;) self,
+}
+
+
+/// Time
+
+dec Time.Now : [!] Nat
 
 
 /// Map
 
 type Map&lt;k, v&gt; = iterative choice {
+  .size =&gt; (Nat) self,
+  .keys =&gt; (List&lt;k&gt;) self,
   .list =&gt; List&lt;(k) v&gt;,
-
-  .put(k, v) =&gt; (Result&lt;v, !&gt;) self,
-  .delete(k) =&gt; (Result&lt;!, v&gt;) self,
-
-  .get(k) =&gt; (Result&lt;!, v&gt;) choice {
-    .put(v) =&gt; self,
-    .delete =&gt; self,
-  },
-
-  .getOr(k, box v) =&gt; (v) choice {
+  .entry(k) =&gt; (Option&lt;v&gt;) choice {
     .put(v) =&gt; self,
     .delete =&gt; self,
   },
 }
 
 dec Map.String : [type v] [List&lt;(String) box v&gt;] Map&lt;String, v&gt;
+dec Map.Bytes  : [type v] [List&lt;(Bytes) box v&gt;]  Map&lt;Bytes, v&gt;
 dec Map.Int    : [type v] [List&lt;(Int) box v&gt;]    Map&lt;Int, v&gt;
 dec Map.Nat    : [type v] [List&lt;(Nat) box v&gt;]    Map&lt;Nat, v&gt;
 
 
-/// Cell (EXPERIMENTAL)
+/// BoxMap
+
+type BoxMap&lt;k, v&gt; = iterative box choice {
+  .size =&gt; Nat,
+  .keys =&gt; List&lt;k&gt;,
+  .list =&gt; List&lt;(k) box v&gt;,
+  .get(k) =&gt; Option&lt;box v&gt;,
+  .put(k, box v) =&gt; self,
+  .delete(k) =&gt; self,
+}
+
+type BoxMap.Readonly&lt;k, v&gt; = box choice {
+  .size =&gt; Nat,
+  .keys =&gt; List&lt;k&gt;,
+  .list =&gt; List&lt;(k) box v&gt;,
+  .get(k) =&gt; Option&lt;box v&gt;,
+}
+
+dec BoxMap.String : [type v] [List&lt;(String) box v&gt;] BoxMap&lt;String, v&gt;
+dec BoxMap.Bytes  : [type v] [List&lt;(Bytes) box v&gt;]  BoxMap&lt;Bytes, v&gt;
+dec BoxMap.Int    : [type v] [List&lt;(Int) box v&gt;]    BoxMap&lt;Int, v&gt;
+dec BoxMap.Nat    : [type v] [List&lt;(Nat) box v&gt;]    BoxMap&lt;Nat, v&gt;
+
+
+/// Cell
 
 type Cell&lt;a&gt; = iterative choice {
   .end =&gt; ?,
@@ -1150,7 +1483,17 @@ type Cell&lt;a&gt; = iterative choice {
   }
 }
 
-dec Cell.Share : [type a] [a, dual Cell&lt;a&gt;] a
+dec Cell.Share : &lt;a&gt;[a] [dual Cell&lt;a&gt;] a
+def Cell.Share = &lt;a&gt;[value] [client] poll(client) {
+  session =&gt; session.case {
+    .end! =&gt; submit(),
+    .split(client1) client2 =&gt; submit(client1, client2),
+    .take session =&gt; session(value).case {
+      .put(value) client =&gt; submit(client),
+    }
+  }
+  else =&gt; value,
+}
 
 
 /// Debug
@@ -1636,6 +1979,7 @@ any <code>Option&lt;a&gt;</code>, and swapping a pair works regardless of its co
 <li><strong>Are first-class!</strong> It’s possible to store and pass generic values around, without them losing
 their genericity.</li>
 </ul>
+<p>If you want generics inferred at the use site, see <a href="types/./implicit_generics.html">Implicit generics</a>.</p>
 <p>A forall type <strong>consists of two parts:</strong></p>
 <ul>
 <li>A lower-case type variable enclosed in square brackets, and prefixed with the keyword <code>type</code>.</li>
@@ -1684,6 +2028,154 @@ def Pair    = ("Hello!", 42)!
 def Swapped = Swap(type String, Int)(Pair)
 //          = (42, "Hello!")!
 </code></pre>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="implicit-generics"><a class="header" href="#implicit-generics">Implicit generics</a></h1>
+<p>Par already supports explicit generics via <a href="types/./forall.html"><code>forall</code></a>:</p>
+<pre><code class="language-par">dec Swap : [type a, b] [(a, b)!] (b, a)!
+def Swap = [type a, b] [pair]
+  let (first, second)! = pair
+  in (second, first)!
+</code></pre>
+<p>With <code>forall</code>, callers pass types explicitly when they use <code>Swap</code>:</p>
+<pre><code class="language-par">def Pair = ("Hello!", 42)!
+def Swapped = Swap(type String, Int)(Pair)
+</code></pre>
+<p>That is precise and fully explicit. But in many everyday cases, the types are
+obvious from the value you are passing. For those cases, Par also has <strong>implicit
+generics</strong>.</p>
+<h2 id="syntax"><a class="header" href="#syntax">Syntax</a></h2>
+<p>Implicit generics are not a standalone type. The <code>&lt;a, ...&gt;</code> binder is an
+extension of a <strong><a href="types/./function.html">function</a> type</strong>: it must appear immediately
+before the <code>[...]</code> of that type.</p>
+<pre><code class="language-par">&lt;a, b&gt;[Arg] Res
+</code></pre>
+<p>You cannot write <code>&lt;a&gt;</code> in front of <code>either</code>, <code>choice</code>, <code>box</code>, or anything else.</p>
+<p>The key rule is local inference:</p>
+<p><strong>Implicit type variables are inferred only from the single argument
+immediately following the <code>&lt;...&gt;</code> binder.</strong></p>
+<p>This is also reflected in the syntax: the bracket right after <code>&lt;...&gt;</code> must
+contain exactly one argument type. If you need multiple value arguments, you
+still write a curried function type.</p>
+<p>So this is valid:</p>
+<pre><code class="language-par">dec Concat : &lt;a&gt;[List&lt;a&gt;] [List&lt;a&gt;] List&lt;a&gt;
+</code></pre>
+<p>But this is not valid syntax:</p>
+<pre><code class="language-par">dec Concat : &lt;a&gt;[List&lt;a&gt;, List&lt;a&gt;] List&lt;a&gt;
+</code></pre>
+<p>When calling such a function, you can still pass all arguments at once:</p>
+<pre><code class="language-par">Concat(left, right)
+</code></pre>
+<p>The type is still written in curried form, because inference must happen from
+that first argument alone.</p>
+<p>One more important point: there is no syntax for “manually specifying” implicit
+type arguments. When designing an API you choose, for each type variable,
+whether it is implicit or explicit:</p>
+<ul>
+<li>If it is implicit (<code>&lt;a&gt;</code>), it is always inferred.</li>
+<li>If it is explicit (<code>[type a]</code>), it is always specified by the caller.</li>
+</ul>
+<p>This is intentional: it keeps call sites predictable.</p>
+<h2 id="construction-5"><a class="header" href="#construction-5">Construction</a></h2>
+<p>Start with the <code>Swap</code> example, but make it implicit:</p>
+<pre><code class="language-par">dec Swap : &lt;a, b&gt;[(a, b)!] (b, a)!
+</code></pre>
+<p>To construct a value of this type, you also introduce the implicit type names
+at the term level, and then receive the value argument:</p>
+<pre><code class="language-par">dec Swap : &lt;a, b&gt;[(a, b)!] (b, a)!
+def Swap = &lt;a, b&gt;[pair]
+  let (first, second)! = pair
+  in (second, first)!
+</code></pre>
+<p>This is intentionally different from <code>forall</code>: an implicit generic and an
+explicit <code>forall</code> generic are different types, and they do not subtype into one
+another.</p>
+<p>You can also use implicit generics when the type variable is nested inside a
+larger argument:</p>
+<pre><code class="language-par">dec Flatten : &lt;a&gt;[List&lt;List&lt;a&gt;&gt;] List&lt;a&gt;
+</code></pre>
+<h2 id="destruction-5"><a class="header" href="#destruction-5">Destruction</a></h2>
+<p>To use an implicit generic, you call it like an ordinary function:</p>
+<pre><code class="language-par">def Swapped = Swap(Pair)
+</code></pre>
+<p>Here <code>a = String</code> and <code>b = Int</code> are inferred from the type of <code>Pair</code> (the
+argument immediately following <code>&lt;a, b&gt;</code>).</p>
+<p>If you want to steer inference, you can still add annotations locally, for
+example by ascribing a type to an expression:</p>
+<pre><code class="language-par">type T in expr
+</code></pre>
+<p>For example (this is a bit contrived, but it shows the point):</p>
+<pre><code class="language-par">Concat(type List&lt;Nat&gt; in *(), numbers)
+</code></pre>
+<p>If you wrote <code>Concat(*(), numbers)</code>, the empty list <code>*()</code> would lead <code>a</code> to be
+inferred as <code>either {}</code> (an impossible type), so inference would not pick <code>Nat</code>
+for you.</p>
+<h2 id="when-implicit-generics-are-a-bad-fit"><a class="header" href="#when-implicit-generics-are-a-bad-fit">When implicit generics are a bad fit</a></h2>
+<p>Implicit generics infer their type variables from the <em>argument value</em>. This
+works great when that argument already has a clear type (globals, variables,
+fully typed expressions), but it becomes harder when the argument’s type cannot
+be inferred without annotations.</p>
+<p>A classic example is an anonymous function. The <code>box</code> here is not the point —
+it just happens that <code>Map</code> takes a boxed function.</p>
+<pre><code class="language-par">Map(numbers, box Int.ToString)        // fine: Int.ToString has a known type
+Map(numbers, box [x] Int.ToString(x)) // may fail without more info
+</code></pre>
+<p>(<code>Map</code> is discussed in <a href="types/./box.html">Box</a>.)</p>
+<p>In the second call, the type of <code>[x] ...</code> cannot be inferred unless the type of
+<code>x</code> is specified. If the function’s type parameters are being inferred from the
+mapper argument itself, you end up in a chicken-and-egg situation.</p>
+<p>The usual fix is to add an annotation:</p>
+<pre><code class="language-par">Map(numbers, box [x: Int] Int.ToString(x))
+</code></pre>
+<p>This is why implicit generics can be <em>made difficult</em> by higher-order arguments
+like lambdas: if the type of the lambda argument is not already specified, the
+lambda’s type won’t be inferred.</p>
+<p>For example, if <code>Map</code> tried to infer the result type from the mapper itself:</p>
+<pre><code class="language-par">dec Map : &lt;a&gt;[List&lt;a&gt;] &lt;b&gt;[box [a] b] List&lt;b&gt;
+</code></pre>
+<p>then a call like this may fail:</p>
+<pre><code class="language-par">Map(numbers, box [x] Int.ToString(x))
+</code></pre>
+<p>because the type of <code>x</code> is not specified, so the type of the function cannot be
+inferred, so <code>b</code> cannot be inferred either. You end up needing to annotate <code>x</code>:</p>
+<pre><code class="language-par">Map(numbers, box [x: Int] Int.ToString(x))
+</code></pre>
+<p>Many “map-like” APIs therefore prefer to infer the input type and keep the
+output type explicit, e.g.:</p>
+<pre><code class="language-par">dec Map : &lt;a&gt;[List&lt;a&gt;] [type b] [box [a] b] List&lt;b&gt;
+</code></pre>
+<p>With this type, the mapper is checked against the expected type <code>box [a] b</code>, so
+<code>x</code> can be inferred as <code>a</code> and usually needs no annotation. Picking the result
+type <code>b</code> is also often more natural than restating the argument type.</p>
+<h2 id="implicit-generics-and-pairs"><a class="header" href="#implicit-generics-and-pairs">Implicit generics and pairs</a></h2>
+<p>Implicit generics also exist for <a href="types/./pair.html">pair</a> types. This is the implicit
+counterpart of <a href="types/./exists.html"><code>exists</code></a>.</p>
+<p>Just like with functions, the <code>&lt;a, ...&gt;</code> binder is part of the following pair
+type: it must appear right before the <code>(...)</code> of that pair type.</p>
+<p>Here is a simple example. <code>AnyDrop</code> stores a value of some unknown type, plus a
+small “vtable” for dropping it (a boxed <a href="types/./choice.html">choice</a>):</p>
+<pre><code class="language-par">type AnyDrop = &lt;a&gt;(a) box choice {
+  .drop(a) =&gt; !,
+}
+</code></pre>
+<p>This is the implicit counterpart of the existential type:</p>
+<pre><code class="language-par">type DropMe = (type a) (a) box choice {
+  .drop(a) =&gt; !,
+}
+</code></pre>
+<h3 id="construction-6"><a class="header" href="#construction-6">Construction</a></h3>
+<p>Notice that you do not specify the hidden type when constructing an <code>AnyDrop</code>:</p>
+<pre><code class="language-par">def Example: AnyDrop = (7) box case {
+  .drop(_) =&gt; !,
+}
+</code></pre>
+<h3 id="destruction-6"><a class="header" href="#destruction-6">Destruction</a></h3>
+<p>Dually, when you unpack an implicit-generic pair, you introduce a local type
+variable:</p>
+<pre><code class="language-par">let &lt;a&gt;(value) vtable = Example
+vtable.drop(value)
+</code></pre>
+<p>This is the “mirror image” of implicit-generic functions: there you introduce
+<code>&lt;a, ...&gt;</code> at construction time and inference happens at call time; here you
+construct without naming <code>a</code>, and introduce <code>a</code> when unpacking.</p>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="recursive"><a class="header" href="#recursive">Recursive</a></h1>
 <p><em>Par</em> has, among others, these two ambitious design choices:</p>
 <ul>
@@ -1747,7 +2239,7 @@ of occurrences of <code>self</code>: the self-reference.</p>
 <blockquote>
 <p><strong>If there are nested <code>recursive</code> (or <a href="types/./iterative.html"><code>iterative</code></a>) types, it may be necessary to
 distinguish between them.</strong> For that, we can attach <strong>labels</strong> to <code>recursive</code> and <code>self</code>. That’s
-done with a slash: <code>recursive/label</code>, <code>self/label</code>. Any lower-case identifier can be used for the
+done with an <code>@</code>: <code>recursive@label</code>, <code>self@label</code>. Any lower-case identifier can be used for the
 label.</p>
 </blockquote>
 <p>The recursive type can be thought of as being equivalent to its <em>expansion</em>. That is, replacing each
@@ -1821,7 +2313,7 @@ guarded by a <a href="types/./choice.html"><code>choice</code></a>.</strong></p>
 </blockquote>
 <p>The key features of <em>recursive types</em> are that <strong>their values are finite,</strong> and that
 <strong>we can perform recursion on them.</strong></p>
-<h2 id="construction-5"><a class="header" href="#construction-5">Construction</a></h2>
+<h2 id="construction-7"><a class="header" href="#construction-7">Construction</a></h2>
 <p>Recursive types don’t have any special construction syntax. Instead, we directly construct their
 bodies, as if they were expanded.</p>
 <pre><code class="language-par">type Tree = recursive either {
@@ -1862,7 +2354,7 @@ concisely:</p>
 </code></pre>
 <p>However, prepending onto an existing list has no syntax sugar, so <code>ZeroThroughFive</code> still has to be
 done the same way.</p>
-<h2 id="destruction-5"><a class="header" href="#destruction-5">Destruction</a></h2>
+<h2 id="destruction-7"><a class="header" href="#destruction-7">Destruction</a></h2>
 <p>If we don’t need to perform recursion, it’s possible to treat recursive types as their expansions
 when destructing them, too. For example, here we treat a <code>List&lt;String&gt;</code> as its underlying <code>either</code>:</p>
 <pre><code class="language-par">type Option&lt;a&gt; = either {
@@ -1969,7 +2461,7 @@ def BiggerSum = SumTree(BiggerTree)  // = 20
 <blockquote>
 <p><strong>If there are multiple nested <code>.begin</code>/<code>.loop</code>, it may be necessary to
 distinguish between them.</strong> Labels can be used here too, just like with the types:
-<code>.begin/label</code> and <code>.loop/label</code> does the job.</p>
+<code>.begin@label</code> and <code>.loop@label</code> does the job.</p>
 <p>TODO:</p>
 <pre><code class="language-par">type Tree&lt;a&gt; = recursive List&lt;(a) self&gt;
 </code></pre>
@@ -2084,7 +2576,7 @@ obtained as a handle to print to the standard output is an <em>iterative choice<
   .close
 </code></pre>
 </blockquote>
-<h2 id="construction-6"><a class="header" href="#construction-6">Construction</a></h2>
+<h2 id="construction-8"><a class="header" href="#construction-8">Construction</a></h2>
 <p>Values of choice types are constructed using standalone <code>case</code> expressions.</p>
 <pre><code class="language-par">def Example: ChooseStringOrNumber = case {
   .string =&gt; "Hello!",
@@ -2102,7 +2594,7 @@ type, except with types replaced by their values.</p>
 <p>Unlike patterns in <code>.case</code> branches of <a href="types/./either.html"><em>either</em> types</a>, branches in <code>case</code>
 expressions of choice types don’t have a payload to bind: they produce a result. However, we can
 still bind function arguments on the left side of the arrow.</p>
-<h2 id="destruction-6"><a class="header" href="#destruction-6">Destruction</a></h2>
+<h2 id="destruction-8"><a class="header" href="#destruction-8">Destruction</a></h2>
 <p>Choices are destructed by <em>selecting</em> a branch, transforming it into the corresponding result.
 We do it by applying <code>.branch</code> after a value of a choice type.</p>
 <pre><code class="language-par">def Number = Example.number  // = 42
@@ -2160,7 +2652,7 @@ of occurrences of <code>self</code>. Notice that the pattern is the same as with
 <blockquote>
 <p><strong>If there are nested <code>iterative</code> (or <a href="types/./recursive.html"><code>recursive</code></a>) types, it may be necessary to
 distinguish between them.</strong> For that, we can attach <strong>labels</strong> to <code>iterative</code> and <code>self</code>. That’s
-done with a slash: <code>iterative/label</code>, <code>self/label</code>. Any lower-case identifier can be used for the
+done with an <code>@</code>: <code>iterative@label</code>, <code>self@label</code>. Any lower-case identifier can be used for the
 label.</p>
 </blockquote>
 <p>Iterative types are <strong>always linear,</strong> regardless of what’s in their bodies. As such, they can’t be
@@ -2221,14 +2713,14 @@ type InvalidSequence&lt;a&gt; = iterative (a) self  // Error! Unguarded `self` r
 <li>But, <strong>iterative types</strong> are <strong>constructed by loops</strong> and <strong>destructed step by step</strong>.</li>
 </ul>
 <p>Let’s see what that means!</p>
-<h2 id="construction-7"><a class="header" href="#construction-7">Construction</a></h2>
+<h2 id="construction-9"><a class="header" href="#construction-9">Construction</a></h2>
 <p>Values of iterative types are constructed using standalone <code>begin</code>/<code>loop</code> expressions. They start with
 <code>begin</code>, followed by an expression of the body type. Inside this expression, use a standalone <code>loop</code>
 in the <code>self</code> places of the body type to go back to the corresponding <code>begin</code>.</p>
 <blockquote>
 <p>Just like with <a href="types/./recursive.html">recursive’s</a> <code>.begin</code>/<code>.loop</code>, it’s possible to use labels to
-distinguish between nested <code>begin</code>/<code>loop</code> (and <code>.begin</code>/<code>.loop</code>) uses. Just use a slash:
-<code>begin/label</code> and <code>loop/label</code>.</p>
+distinguish between nested <code>begin</code>/<code>loop</code> (and <code>.begin</code>/<code>.loop</code>) uses. Just use <code>@</code>:
+<code>begin@label</code> and <code>loop@label</code>.</p>
 </blockquote>
 <p>Here’s a simple <code>Sequence&lt;Int&gt;</code> that produces the number <code>7</code> forever:</p>
 <pre><code class="language-par">dec SevenForever : Sequence&lt;Int&gt;
@@ -2311,7 +2803,7 @@ we can’t just drop it.</p>
 it may happen that your iterative construction is total — meaning it never enters an infinite,
 unproductive loop — yet not accepted by Par’s type checker. In such cases, it’s possible to
 disable Par’s totality checking by replacing <code>begin</code> with <code>unfounded</code>.</p>
-<h2 id="destruction-7"><a class="header" href="#destruction-7">Destruction</a></h2>
+<h2 id="destruction-9"><a class="header" href="#destruction-9">Destruction</a></h2>
 <p>Iterative types don’t have any special syntax for destruction. Instead, we just operate on their bodies
 directly, as if they were expanded.</p>
 <p>For example, here’s a function to take the first element from a sequence and close it:</p>
@@ -2486,7 +2978,7 @@ operations to perform on it. That makes it useless, but it’s the simplest exam
 It gives us a pair: a value of the hidden type, plus a <a href="types/./choice.html">choice</a> with just one operation:
 dropping a value of that type.</p>
 <p>Let’s now see how existential types are used.</p>
-<h2 id="construction-8"><a class="header" href="#construction-8">Construction</a></h2>
+<h2 id="construction-10"><a class="header" href="#construction-10">Construction</a></h2>
 <p>To construct an existential value, you must pick a concrete type and provide a matching payload.</p>
 <p>The syntax is the same as for <a href="types/./pair.html">pairs</a>, with the addition of the <code>type</code> keyword.</p>
 <p>Here’s a value of type <code>Any</code>:</p>
@@ -2507,7 +2999,7 @@ dropping a value of that type.</p>
   .drop(n) =&gt; !,  // `n`, being an `Int`, is dropped by being unused
 }
 </code></pre>
-<h2 id="destruction-8"><a class="header" href="#destruction-8">Destruction</a></h2>
+<h2 id="destruction-10"><a class="header" href="#destruction-10">Destruction</a></h2>
 <p>To use an existential value, you must <strong>unpack it</strong>. The syntax is the same as unpacking a pair,
 just with the type keyword.</p>
 <p>Here’s an example that unpacks and uses a <code>DropMe</code>:</p>
@@ -2754,7 +3246,7 @@ session typing to this imperative-looking process syntax.</p>
 }
 </code></pre>
 <p>It’s basically an object, in an OOP-fashion, with two methods: <code>.add</code> and <code>.build</code>. At the top
-level, it’s an <a href="processes/commands/../types/iterative.html">iterative</a> <a href="processes/commands/../types/choice.html">choice</a>: an object that
+level, it’s an <a href="processes/commands/../../types/iterative.html">iterative</a> <a href="processes/commands/../../types/choice.html">choice</a>: an object that
 can be repeatedly interacted with.</p>
 <p>We construct an empty <code>String.Builder</code> using the built-in definition of the same name:</p>
 <pre><code class="language-par">def LetsBuildStrings = do {
@@ -2763,11 +3255,11 @@ can be repeatedly interacted with.</p>
 </code></pre>
 <h2 id="selection"><a class="header" href="#selection">Selection</a></h2>
 <p>Now, we have a local variable <code>builder</code> of the type <code>String.Builder</code>.</p>
-<p>When learning about <a href="processes/commands/../types/iterative.html">iterative</a> types, we learned that we can treat them
+<p>When learning about <a href="processes/commands/../../types/iterative.html">iterative</a> types, we learned that we can treat them
 as their underlying body. For <code>String.Builder</code>, it’s a <strong>choice type,</strong> and the command for those is
 the <strong>selection command.</strong></p>
 <p>All commands start with their subject. Here it’s the <code>builder</code> variable. The selection command
-itself then looks the same as the usual <a href="processes/commands/../types/choice.html#destruction">destruction of a choice</a>.</p>
+itself then looks the same as the usual <a href="processes/commands/../../types/choice.html#destruction">destruction of a choice</a>.</p>
 <pre><code class="language-par">def LetsBuildStrings = do {
   let builder = String.Builder
   builder.add        // selection command
@@ -2777,7 +3269,7 @@ itself then looks the same as the usual <a href="processes/commands/../types/cho
 of the selected branch. Here’s the one we selected:</p>
 <pre><code class="language-par">  .add(String) =&gt; self,
 </code></pre>
-<p>The argument on the left side of <code>=&gt;</code> is just a syntax sugar for a <a href="processes/commands/../types/function.html">function</a>.
+<p>The argument on the left side of <code>=&gt;</code> is just a syntax sugar for a <a href="processes/commands/../../types/function.html">function</a>.
 De-sugared, it is:</p>
 <pre><code class="language-par">  .add =&gt; [String] self,
 </code></pre>
@@ -2852,8 +3344,8 @@ can be <strong>chained</strong> together, without repeating the subject.</p>
 } in builder.build  // = "Hello, world!"
 </code></pre>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="looping--branching"><a class="header" href="#looping--branching">Looping &amp; Branching</a></h1>
-<p>We’ve now seen how commands work with <a href="processes/commands/../types/choice.html">choice types</a> (via selection),
-and <a href="processes/commands/../types/function.html">function types</a> (via sending). But those aren’t the only types that
+<p>We’ve now seen how commands work with <a href="processes/commands/../../types/choice.html">choice types</a> (via selection),
+and <a href="processes/commands/../../types/function.html">function types</a> (via sending). But those aren’t the only types that
 come with their own command styles. Every type does.</p>
 <p>Let’s turn our attention to something more intricate: <strong>recursive types.</strong></p>
 <p>Take this familiar definition:</p>
@@ -2862,8 +3354,8 @@ come with their own command styles. Every type does.</p>
   .item(a) self,
 }
 </code></pre>
-<p>The <code>List</code> type is <a href="processes/commands/../types/recursive.html">recursive</a>, and contains an
-<a href="processes/commands/../types/either.html"><code>either</code></a>, and within that, a <a href="processes/commands/../types/pair.html">pair</a>.</p>
+<p>The <code>List</code> type is <a href="processes/commands/../../types/recursive.html">recursive</a>, and contains an
+<a href="processes/commands/../../types/either.html"><code>either</code></a>, and within that, a <a href="processes/commands/../../types/pair.html">pair</a>.</p>
 <p>To work with such a structure in process syntax, we’ll need to combine three kinds of commands:</p>
 <ul>
 <li><code>.begin</code> and <code>.loop</code> for recursion,</li>
@@ -2898,7 +3390,7 @@ not return something.</p>
 </code></pre>
 <p>There’s another key difference: notice the <code>.item</code> branch has <code>=&gt;</code> right after the branch name!
 There’s no pattern. That’s because in process syntax, binding the payload of an
-<a href="processes/commands/../types/either.html">either</a> is optional. Normally, <strong>the subject itself becomes the payload.</strong>
+<a href="processes/commands/../../types/either.html">either</a> is optional. Normally, <strong>the subject itself becomes the payload.</strong>
 However, it is possible to match the payload fully, if desired.</p>
 <p>So, inside the <code>.item</code> branch, <code>strings</code> now has the type <code>(String) List&lt;String&gt;</code> — it’s a pair, and
 we want to peel off its first part, to add it to the string builder.</p>
@@ -2933,7 +3425,7 @@ different operations based on its changing type. Meanwhile, <code>builder</code>
 tagging along the control flow of <code>strings</code>.</p>
 <h2 id="patterns-in-case-branches"><a class="header" href="#patterns-in-case-branches">Patterns in <code>.case</code> branches</a></h2>
 <p>The <code>.item =&gt;</code> branch can be made a little more pleasant. If the subject after .begin is a
-<a href="processes/commands/../types/pair.html">pair</a>, we’re allowed to use pattern matching directly in the <code>.case</code> branch.</p>
+<a href="processes/commands/../../types/pair.html">pair</a>, we’re allowed to use pattern matching directly in the <code>.case</code> branch.</p>
 <p>That means this:</p>
 <pre><code class="language-par">    .item =&gt; {
       strings[str]
@@ -2964,10 +3456,10 @@ def TestConcat = Concat(*("A", "B", "C"))  // = "ABC"
 </code></pre>
 <p>This beautifully ties together all the commands we’ve covered so far:</p>
 <ul>
-<li><strong>Selection</strong> for <a href="processes/commands/../types/choice.html">choices</a>.</li>
-<li><strong>Sending</strong> for <a href="processes/commands/../types/function.html">functions</a>.</li>
-<li><strong>Branching</strong> for <a href="processes/commands/../types/either.html">eithers</a>.</li>
-<li><strong>Receiving</strong> for <a href="processes/commands/../types/pair.html">pairs</a>. Here, in the form of a pattern.</li>
+<li><strong>Selection</strong> for <a href="processes/commands/../../types/choice.html">choices</a>.</li>
+<li><strong>Sending</strong> for <a href="processes/commands/../../types/function.html">functions</a>.</li>
+<li><strong>Branching</strong> for <a href="processes/commands/../../types/either.html">eithers</a>.</li>
+<li><strong>Receiving</strong> for <a href="processes/commands/../../types/pair.html">pairs</a>. Here, in the form of a pattern.</li>
 </ul>
 <p>The <em>receive commands</em> is the least clearly useful here. Let’s move to infinite sequences to see a
 more compelling use-case.</p>
@@ -2996,7 +3488,7 @@ def Fibonacci =
 </code></pre>
 <p>The internal state of the sequence is a pair <code>(a) b</code>. On each <code>.next</code>, we emit <code>a</code> and update
 the pair. This is a clean and elegant use of corecursive iteration, as we’ve covered it in the
-section on <a href="processes/commands/../types/iterative.html">iterative types</a>.</p>
+section on <a href="processes/commands/../../types/iterative.html">iterative types</a>.</p>
 <p>So far so good — but how do we use this value?</p>
 <h2 id="goal-print-the-first-30-fibonacci-numbers"><a class="header" href="#goal-print-the-first-30-fibonacci-numbers">Goal: print the first 30 Fibonacci numbers</a></h2>
 <p>Let’s say we want to print the first 30 Fibonacci numbers to the terminal.</p>
@@ -3009,7 +3501,7 @@ section on <a href="processes/commands/../types/iterative.html">iterative types<
 </ol>
 <p>We’ll need a way to loop <strong>exactly 30 times.</strong> But there’s a catch: In Par,
 <strong>looping is only possible on recursive types.</strong> There’s no built-in recursion on <code>Nat</code>, so we need
-to convert the number 30 into a <a href="processes/commands/../types/recursive.html">recursive</a>.</p>
+to convert the number 30 into a <a href="processes/commands/../../types/recursive.html">recursive</a>.</p>
 <p>Good news: there’s a built-in helper for that! It’s called <code>Nat.Repeat</code>, here’s its type:</p>
 <pre><code class="language-par">dec Nat.Repeat : [Nat] recursive either {
   .end!,
@@ -3336,27 +3828,27 @@ a nested list:</p>
 <p>It’s a generic function, using the <a href="processes/../types/forall.html">forall</a> for polymorphism.</p>
 <p>Here’s the full implementation, imperative-style:</p>
 <pre><code class="language-par">def Flatten = [type a] [lists] chan yield {
-  lists.begin/outer.case {
+  lists.begin@outer.case {
     .end! =&gt; {
       yield.end!
     }
 
     .item(list) =&gt; {
-      list.begin/inner.case {
+      list.begin@inner.case {
         .end! =&gt; {}
         .item(value) =&gt; {
           yield.item(value)
-          list.loop/inner
+          list.loop@inner
         }
       }
-      lists.loop/outer
+      lists.loop@outer
     }
   }
 }
 </code></pre>
 <p>It makes a bunch of concepts we’ve already covered come together.</p>
 <ul>
-<li>We loop through the outer list of lists using <code>.begin/outer</code> and <code>.loop/outer</code>.</li>
+<li>We loop through the outer list of lists using <code>.begin@outer</code> and <code>.loop@outer</code>.</li>
 <li>If it’s <code>.end!</code>, we finish: <code>yield.end!</code>.</li>
 <li>If it’s <code>.item(list)</code>, we then begin looping through the inner list.
 <ul>
@@ -3377,6 +3869,10 @@ Re-binding of the rest of the list is not needed here, either.</li>
 Constructing lists generator-style is just one of the use-cases.<br />
 Whenever it feels more appropriate to <em>become a value</em> instead of constructing it from parts, <code>chan</code> and
 duality come to the task!</p>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="quality-of-life-syntax-sugar"><a class="header" href="#quality-of-life-syntax-sugar">Quality of Life Syntax Sugar</a></h1>
+<p>Par gives you a set of very light core constructs. Everything else is built on
+those foundations. Some bits of syntax, though, exist purely to make common
+patterns less noisy.</p>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="error-handling"><a class="header" href="#error-handling">Error Handling</a></h1>
 <p>Programs that interact with the real world must handle errors gracefully. Files don’t exist, networks disconnect, users type unexpected input. Most errors occur at I/O boundaries where your program meets external systems beyond its control.</p>
 <p>Par takes a structured approach to error handling that builds on its linear type system. At its core, Par uses explicit Result types — but adds lightweight syntax sugar that makes working with errors feel natural while keeping the underlying semantics transparent.</p>
@@ -3386,12 +3882,12 @@ duality come to the task!</p>
 <p><strong>Rust’s <code>?</code> operator</strong> works by dropping remaining owned values when propagating errors. This implicit cleanup doesn’t translate to Par’s linear types, where each value must be consumed according to its specific type and context.</p>
 <p>Par needs error handling that makes cleanup fully explicit while remaining convenient to use. The <code>try</code>/<code>catch</code>/<code>throw</code> syntax sugar introduced here achieves this balance — borrowing familiar keywords from exception handling while operating very differently. Unlike traditional exceptions, Par’s error handling is purely local syntax sugar over <code>Result</code> types, with no hidden control flow or stack unwinding.</p>
 <h2 id="working-with-files-error-handling-without-sugar"><a class="header" href="#working-with-files-error-handling-without-sugar">Working with Files: Error Handling Without Sugar</a></h2>
-<p>Let’s start with a concrete example using Par’s file system operations through the <a href="./builtin.html"><code>Os</code> module</a>. The <code>Os.Path</code> type provides methods for working with the filesystem — creating files, reading directories, and so on. Most of these operations can fail, so they return <code>Result</code> values.</p>
+<p>Let’s start with a concrete example using Par’s file system operations through the <a href="quality_of_life/./builtin.html"><code>Os</code> module</a>. The <code>Os.Path</code> type provides methods for working with the filesystem — creating files, reading directories, and so on. Most of these operations can fail, so they return <code>Result</code> values.</p>
 <p>Here’s what error handling looks like without any syntax sugar. We’ll write a program that creates a log file and writes some entries to it:</p>
 <pre><code class="language-par">def Main: ! = chan exit {
   let console = Console.Open
 
-  let path = Os.PathFromString("logs.txt")
+  let path = Os.Path("logs.txt")
   path.createOrAppendToFile.case {
     .err e =&gt; {
       console.print(e)
@@ -3403,9 +3899,9 @@ duality come to the task!</p>
   // ...
 </code></pre>
 <p>A few things to note about this pattern:</p>
-<p>The <code>chan exit</code> creates a channel called <code>exit</code> of type <code>?</code> — <a href="./processes/duality.html">the continuation type</a>, which is dual to our <code>Main</code> function’s return type <code>!</code>. The <code>exit!</code> syntax is the <em>break</em> command applied to this continuation, which ends the process.</p>
+<p>The <code>chan exit</code> creates a channel called <code>exit</code> of type <code>?</code> — <a href="quality_of_life/./processes/duality.html">the continuation type</a>, which is dual to our <code>Main</code> function’s return type <code>!</code>. The <code>exit!</code> syntax is the <em>break</em> command applied to this continuation, which ends the process.</p>
 <p>After the <code>.case</code> block, the <code>writer</code> variable is available in the surrounding scope. This is how process-scoped variables work in Par — variables bound in <code>.case</code> branches continue to exist after the case analysis.</p>
-<pre><code class="language-par">  writer.writeString("[INFO] First new log\n").case {
+<pre><code class="language-par">  writer.write("[INFO] First new log\n").case {
     .err e =&gt; {
       console.print(e)
       console.close
@@ -3414,8 +3910,8 @@ duality come to the task!</p>
     .ok =&gt; {}
   }
 </code></pre>
-<p>In <a href="./process_syntax.html">process syntax</a>, when we use <code>.ok =&gt;</code>, the subject of the command (<code>writer</code>) gets updated to the payload of the .ok branch. Since <code>.writeString</code> returns the same <code>Os.Writer</code> type on success, <code>writer</code> remains usable.</p>
-<pre><code class="language-par">  writer.writeString("[INFO] Second new log\n").case {
+<p>In <a href="quality_of_life/./process_syntax.html">process syntax</a>, when we use <code>.ok =&gt;</code>, the subject of the command (<code>writer</code>) gets updated to the payload of the .ok branch. Since <code>.write</code> returns the same <code>Os.Writer</code> type on success, <code>writer</code> remains usable.</p>
+<pre><code class="language-par">  writer.write("[INFO] Second new log\n").case {
     .err e =&gt; {
       console.print(e)
       console.close
@@ -3425,7 +3921,7 @@ duality come to the task!</p>
   }
 </code></pre>
 <p>And finish by closing the file:</p>
-<pre><code class="language-par">  writer.close(.ok!).case {
+<pre><code class="language-par">  writer.close.case {
     .err e =&gt; {
       console.print(e)
       console.close
@@ -3441,7 +3937,7 @@ duality come to the task!</p>
 <pre><code class="language-par">def Main: ! = chan exit {
   let console = Console.Open
 
-  let path = Os.PathFromString("logs.txt")
+  let path = Os.Path("logs.txt")
   path.createOrAppendToFile.case {
     .err e =&gt; {
       console.print(e)
@@ -3451,7 +3947,7 @@ duality come to the task!</p>
     .ok writer =&gt; {}
   }
   
-  writer.writeString("[INFO] First new log\n").case {
+  writer.write("[INFO] First new log\n").case {
     .err e =&gt; {
       console.print(e)
       console.close
@@ -3459,7 +3955,7 @@ duality come to the task!</p>
     }
     .ok =&gt; {}
   }
-  writer.writeString("[INFO] Second new log\n").case {
+  writer.write("[INFO] Second new log\n").case {
     .err e =&gt; {
       console.print(e)
       console.close
@@ -3468,7 +3964,7 @@ duality come to the task!</p>
     .ok =&gt; {}
   }
 
-  writer.close(.ok!).case {
+  writer.close.case {
     .err e =&gt; {
       console.print(e)
       console.close
@@ -3493,20 +3989,20 @@ duality come to the task!</p>
     exit!
   }
 
-  let path = Os.PathFromString("logs.txt")
+  let path = Os.Path("logs.txt")
   let try writer = path.createOrAppendToFile
   
-  writer.writeString("[INFO] First new log\n").try
-  writer.writeString("[INFO] Second new log\n").try
+  writer.write("[INFO] First new log\n").try
+  writer.write("[INFO] Second new log\n").try
 
-  writer.close(.ok!).try
+  writer.close.try
   console.close
   exit!
 }
 </code></pre>
 <p>Significantly shorter and more readable! The error handling is declared once and applies to all subsequent operations.</p>
 <h2 id="how-trycatchthrow-work-in-process-syntax"><a class="header" href="#how-trycatchthrow-work-in-process-syntax">How <code>try</code>/<code>catch</code>/<code>throw</code> Work in Process Syntax</a></h2>
-<p>Par’s error handling sugar is built around three keywords that desugar to explicit <code>Result</code> handling. Let’s understand how they work.</p>
+<p>Par’s error handling sugar is built around small, local keywords that desugar to explicit <code>Result</code> handling. Let’s understand how they work.</p>
 <h3 id="the-catch-statement"><a class="header" href="#the-catch-statement">The <code>catch</code> Statement</a></h3>
 <p>Before you can use <code>try</code> or <code>throw</code>, you must define a <code>catch</code> block in the same process. This restriction is crucial — the corresponding <code>try</code> and <code>throw</code> commands must be in the same sequential process as their <code>catch</code>, not in nested processes or expressions.</p>
 <pre><code class="language-par">catch &lt;pattern&gt; =&gt; {
@@ -3553,7 +4049,7 @@ exit!
 <p><code>try</code> appears in two contexts: <em>patterns</em> and <em>commands.</em></p>
 <h3 id="try-in-commands"><a class="header" href="#try-in-commands"><code>.try</code> in Commands</a></h3>
 <p>The <code>.try</code> postfix transforms verbose <code>Result</code> case analysis into clean linear code. Remember our original verbose version:</p>
-<pre><code class="language-par">writer.writeString("[INFO] First new log\n").case {
+<pre><code class="language-par">writer.write("[INFO] First new log\n").case {
   .err e =&gt; {
     console.print(e)
     console.close
@@ -3563,7 +4059,7 @@ exit!
 }
 </code></pre>
 <p>With <code>.try</code>, this becomes:</p>
-<pre><code class="language-par">writer.writeString("[INFO] First new log\n").try
+<pre><code class="language-par">writer.write("[INFO] First new log\n").try
 </code></pre>
 <p>The <code>.try</code> postfix desugars any command or expression returning a <code>Result</code>:</p>
 <pre><code class="language-par">variable.try
@@ -3587,6 +4083,7 @@ exit!
 source.poll.try[value]
 </code></pre>
 <p>After this command, <code>source</code> maintains its <code>Poll&lt;Os.Error, String&gt;</code> type and value contains the successfully polled <code>String</code>.</p>
+<!-- moved `default` to the end of this chapter -->
 <h3 id="the-concurrent-evaluation-restriction"><a class="header" href="#the-concurrent-evaluation-restriction">The Concurrent Evaluation Restriction</a></h3>
 <p>You might think this would work:</p>
 <pre><code class="language-par">let writer = path.createOrAppendToFile.try
@@ -3674,18 +4171,18 @@ config.getUserName.try
 </code></pre>
 <h2 id="labels-and-layered-error-handling"><a class="header" href="#labels-and-layered-error-handling">Labels and Layered Error Handling</a></h2>
 <p>Like <code>begin</code>/<code>loop</code>, <code>catch</code> blocks can be labeled for precise control:</p>
-<pre><code class="language-par">catch/label e =&gt; { ... }
+<pre><code class="language-par">catch@label e =&gt; { ... }
 </code></pre>
 <p>The corresponding <code>try</code> and <code>throw</code> commands reference the same label:</p>
-<pre><code class="language-par">let try/label value = result
-throw/label "Custom error"
+<pre><code class="language-par">let try@label value = result
+throw@label "Custom error"
 </code></pre>
 <p>Labels are selected by proximity and name, not by error type. The nearest <code>catch</code> with the matching label (or no label) is chosen. This allows different error types to be routed to different handlers:</p>
-<pre><code class="language-par">catch/fs e =&gt; { /* handle file system errors */ }
-catch/net e =&gt; { /* handle network errors */ }
+<pre><code class="language-par">catch@fs e =&gt; { /* handle file system errors */ }
+catch@net e =&gt; { /* handle network errors */ }
 
-let try/fs writer = path.createFile
-let try/net conn = url.connect
+let try@fs writer = path.createFile
+let try@net conn = url.connect
 </code></pre>
 <h3 id="throwing-to-previous-catch-blocks"><a class="header" href="#throwing-to-previous-catch-blocks">Throwing to Previous <code>catch</code> Blocks</a></h3>
 <p>A powerful pattern is using nested <code>catch</code> blocks for resource cleanup while delegating to outer blocks for shared error handling.</p>
@@ -3722,26 +4219,26 @@ ProcessTogether(resource, otherData)
     exit!
   }
 
-  let try reader = Os.PathFromString(src).openFile
-  catch/w e =&gt; { reader.close(.ok!); throw e }
+  let try reader = Os.Path(src).openFile
+  catch@w e =&gt; { reader.close; throw e }
 
-  let try/w writer = Os.PathFromString(dst).createOrReplaceFile
-  catch/r e =&gt; { writer.close(.ok!); throw e }
+  let try@w writer = Os.Path(dst).createOrReplaceFile
+  catch@r e =&gt; { writer.close; throw e }
 
-  reader.begin.read.try/r.case {
+  reader.begin.read.try@r.case {
     .end! =&gt; {
-      writer.close(.ok!).try
+      writer.close.try
       console.close
       exit!
     }
     .chunk(bytes) =&gt; {
-      writer.write(bytes).try/w
+      writer.write(bytes).try@w
       reader.loop
     }
   }
 }
 </code></pre>
-<p>Here, the <code>catch/r</code> and <code>catch/w</code> blocks provide resource-specific cleanup (closing file handles) but then throw to the main error handler for shared logic like printing the error and exiting.</p>
+<p>Here, the <code>catch@r</code> and <code>catch@w</code> blocks provide resource-specific cleanup (closing file handles) but then throw to the main error handler for shared logic like printing the error and exiting.</p>
 <p>This layered approach allows you to build sophisticated error handling hierarchies while keeping each level focused and clear.</p>
 <h2 id="propagating-errors-in-functions"><a class="header" href="#propagating-errors-in-functions">Propagating Errors in Functions</a></h2>
 <p>The examples so far have shown terminal error handling — printing errors and exiting. But often you want to propagate errors up to the caller. Here’s a utility function that reads an entire file’s contents:</p>
@@ -3749,12 +4246,436 @@ ProcessTogether(resource, otherData)
 def ReadAll = [path] chan return {
   catch e =&gt; { return &lt;&gt; .err e }
   let try reader = path.openFile
-  let parser = Bytes.ParseReader(type either{}, Os.Error)(reader)
+  let parser = Bytes.ParseReader(type Os.Error)(reader)
   let try contents = parser.remainder
   return &lt;&gt; .ok contents
 }
 </code></pre>
 <p>This function uses <code>Bytes.ParseReader</code> to convert the chunked <code>Bytes.Reader</code> from <code>path.openFile</code> into a parser that provides a convenient <code>.remainder</code> method for reading all contents at once. The <code>catch</code> block propagates any errors by linking them into an <code>.err</code> result, while success links the contents into an <code>.ok</code> result.</p>
+<h2 id="providing-defaults-with-default"><a class="header" href="#providing-defaults-with-default">Providing defaults with <code>default</code></a></h2>
+<p>Sometimes you don’t want to propagate an error — you want to replace it with a fallback and keep going. The <code>default</code> sugar does exactly that, and unlike <code>try</code>, it is completely standalone: it does not require a surrounding <code>catch</code>, and it is valid even in nested expression positions.</p>
+<ul>
+<li>
+<p>Postfix form (expressions/commands):</p>
+<pre><code class="language-par">let r1: Result&lt;!, Int&gt; = .ok 7
+let r2: Result&lt;!, Int&gt; = .err!
+
+let x = r1.default(0)   // x = 7
+let y = r2.default(0)   // y = 0
+</code></pre>
+<p>This desugars to a <code>.case</code> on the subject: on <code>.ok</code> it continues with the unwrapped value, on <code>.err</code> it evaluates the fallback expression and uses that value instead. Because it is a local rewrite, it can be used directly in <code>let</code> bindings and other expression contexts.</p>
+</li>
+<li>
+<p>Pattern form (including in receives):</p>
+<pre><code class="language-par">let default(0) n = Nat.FromString("oops")
+</code></pre>
+<p>The pattern binds on <code>.ok</code>, and binds the fallback expression on <code>.err</code>.</p>
+<p>Here’s a practical example that shows why the pattern form is particularly useful with receive commands. It counts word occurrences using a map; when a key is missing, it starts from <code>0</code>:</p>
+<pre><code class="language-par">dec Counts : [List&lt;String&gt;] List&lt;(String) Nat&gt;
+def Counts = [words] do {
+  let counts = Map.String(type Nat)(*())
+  words.begin.case {
+    .end! =&gt; {}
+    .item(word) =&gt; {
+      counts.entry(word)[default(0) count]
+      counts.put(Nat.Add(count, 1))
+      words.loop
+    }
+  }
+} in counts.list
+</code></pre>
+<p>In the <code>.item</code> branch, <code>counts.entry(word)</code> returns a <code>Result&lt;!, Nat&gt;</code> via a receive; <code>default(0)</code> seamlessly handles the missing case and binds <code>count</code> to <code>0</code>.</p>
+</li>
+</ul>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="conditions--if"><a class="header" href="#conditions--if">Conditions &amp; <code>if</code></a></h1>
+<p>Par has <code>if</code> in both expression syntax (it returns a value) and process syntax
+(it runs process code). What makes Par’s <code>if</code> unusual is the condition language:
+conditions can match <code>either</code>s and bind names, and those bindings flow through
+<code>and</code>/<code>or</code>/<code>not</code>.</p>
+<p>We’ll start with a tiny <code>if</code> you can read left to right, then grow it into the
+full condition language, and finally see how the same ideas apply in process
+code.</p>
+<h2 id="expression-if---"><a class="header" href="#expression-if---">Expression <code>if { ... }</code></a></h2>
+<p>Let’s start with a small example:</p>
+<pre><code class="language-par">dec Describe : [Bool] String
+def Describe = [flag] if {
+  flag =&gt; "on",
+  else =&gt; "off",
+}
+</code></pre>
+<p>Read the syntax left to right:</p>
+<ul>
+<li><code>if {</code> starts the conditional expression.</li>
+<li>A branch is <code>&lt;condition&gt; =&gt; &lt;expression&gt;</code>.</li>
+<li>Branches are separated by commas.</li>
+<li><code>else =&gt; ...</code> is the fallback branch.</li>
+<li>The closing <code>}</code> ends the expression.</li>
+</ul>
+<p>In other words:</p>
+<pre><code class="language-par">if {
+  &lt;condition&gt; =&gt; &lt;expression&gt;,
+  ...
+  else =&gt; &lt;expression&gt;,
+}
+</code></pre>
+<p>Values of the <code>Bool</code> type (an <code>either { .true!, .false! }</code>) can be used directly
+as conditions, so any expression producing <code>Bool</code> can be used on the left of
+<code>=&gt;</code>.</p>
+<p>Unlike the common <code>if ... else if ... else</code> chain found in many languages, Par’s
+“normal” <code>if</code> is a single <code>if { ... }</code> block with any number of branches.</p>
+<p>To evaluate an <code>if { ... }</code>, read it like this:</p>
+<ul>
+<li>Check branches from top to bottom.</li>
+<li>For each branch, evaluate its condition.</li>
+<li>The first condition that succeeds selects its branch, and the <code>if</code> evaluates
+to that branch’s expression.</li>
+<li>If no condition succeeds, the <code>else</code> branch is chosen.</li>
+</ul>
+<h2 id="is-matching-an-either-and-binding"><a class="header" href="#is-matching-an-either-and-binding"><code>is</code>: matching an <code>either</code> (and binding)</a></h2>
+<p>Par’s “sum type” is <a href="quality_of_life/../types/either.html"><code>either</code></a>. If you just want to match an
+<code>either</code> without extra predicates, you can always use <code>.case</code>. <code>if</code> becomes
+useful once you want to match <em>and</em> filter while keeping bindings.</p>
+<p>Two common <code>either</code> types you’ll see everywhere are <code>Result</code> and <code>Option</code>:</p>
+<pre><code class="language-par">type Result&lt;e, a&gt; = either {
+  .err e,
+  .ok a,
+}
+
+type Option&lt;a&gt; = Result&lt;!, a&gt;
+</code></pre>
+<p>An <code>is</code> condition checks an <code>either</code> and binds its payload. Its shape is:</p>
+<pre><code class="language-par">&lt;value&gt; is .&lt;variant&gt;&lt;payload-pattern&gt;
+</code></pre>
+<p>The payload pattern is always present. For a unit payload you still write <code>!</code>,
+so <code>value is .less!</code> is valid, but <code>value is .less</code> is not.</p>
+<p>Here is the return type of <code>Int.Compare</code>:</p>
+<pre><code class="language-par">type Ordering = either {
+  .less!,
+  .equal!,
+  .greater!,
+}
+</code></pre>
+<p>Now an <code>if</code> can match directly on those variants:</p>
+<pre><code class="language-par">dec CompareSign : [Int, Int] String
+def CompareSign = [x, y]
+  let cmp = Int.Compare(x, y) in
+  if {
+    cmp is .less! =&gt; "less",
+    cmp is .greater! =&gt; "greater",
+    else =&gt; "equal",
+  }
+</code></pre>
+<p>Read it top to bottom:</p>
+<ul>
+<li>If <code>cmp is .less!</code> succeeds, the whole <code>if</code> becomes <code>"less"</code>.</li>
+<li>Otherwise, if <code>cmp is .greater!</code> succeeds, the whole <code>if</code> becomes <code>"greater"</code>.</li>
+<li>Otherwise it falls through to <code>else</code> and becomes <code>"equal"</code>.</li>
+</ul>
+<p><code>is</code> only works with <code>either</code> types. You cannot write <code>is 5</code> or match arbitrary
+values; use normal boolean expressions for those.</p>
+<h2 id="and-match-then-refine"><a class="header" href="#and-match-then-refine"><code>and</code>: match, then refine</a></h2>
+<p>In Par, <code>and</code>/<code>or</code>/<code>not</code> are not just boolean algebra operators. They are
+control-flow constructs: they short-circuit, and those success/failure paths are
+how bindings from <code>is</code> become available (or not available) later in the
+condition and inside the branch.</p>
+<h3 id="and-with-an-extra-predicate"><a class="header" href="#and-with-an-extra-predicate"><code>and</code> with an extra predicate</a></h3>
+<pre><code class="language-par">dec CountStatus : [Option&lt;Nat&gt;] String
+def CountStatus = [count] if {
+  count is .ok n and Nat.Equals(n, 0) =&gt; "zero",
+  count is .ok _ =&gt; "non-zero",
+  else =&gt; "missing",
+}
+</code></pre>
+<p>Step by step:</p>
+<ul>
+<li>Try the first branch.
+<ul>
+<li>First evaluate <code>count is .ok n</code>. If it fails, the whole <code>and</code> fails.</li>
+<li>If it succeeds, <code>n</code> is bound and Par evaluates <code>Nat.Equals(n, 0)</code>.</li>
+<li>Only if both parts succeed does the branch return <code>"zero"</code>.</li>
+</ul>
+</li>
+<li>If the first branch fails, try the second branch <code>count is .ok _</code>, which
+matches any present value and returns <code>"non-zero"</code>.</li>
+<li>If both branches fail, <code>count</code> must be <code>.err!</code>, so <code>else</code> returns <code>"missing"</code>.</li>
+</ul>
+<h3 id="and-with-two-bindings"><a class="header" href="#and-with-two-bindings"><code>and</code> with two bindings</a></h3>
+<pre><code class="language-par">dec AddOk : [Result&lt;String, Int&gt;, Result&lt;String, Int&gt;] Int
+def AddOk = [left, right] if {
+  left is .ok a and right is .ok b =&gt; Int.Add(a, b),
+  else =&gt; 0,
+}
+</code></pre>
+<p>If the whole condition succeeds, it means both matches succeeded, so both <code>a</code>
+and <code>b</code> are in scope in the branch.</p>
+<p>Read it like this:</p>
+<ul>
+<li>Try to bind <code>a</code> from <code>left</code>.</li>
+<li>Only if that succeeds, try to bind <code>b</code> from <code>right</code>.</li>
+<li>Only if both succeed does the branch run <code>Int.Add(a, b)</code>.</li>
+</ul>
+<h2 id="or-try-one-condition-then-another"><a class="header" href="#or-try-one-condition-then-another"><code>or</code>: try one condition, then another</a></h2>
+<p>Like <code>and</code>, <code>or</code> short-circuits. The right side only runs if the left side
+fails. A good mental model is:</p>
+<blockquote>
+<p>try the left condition; if it fails, try the right condition</p>
+</blockquote>
+<p>One common use for <code>or</code> is “fallback” matching:</p>
+<pre><code class="language-par">dec PickOk : [Result&lt;String, String&gt;, Result&lt;String, String&gt;] String
+def PickOk = [primary, fallback] if {
+  primary is .ok value or fallback is .ok value =&gt; value,
+  else =&gt; "&lt;missing&gt;",
+}
+</code></pre>
+<p>Read it as two attempts:</p>
+<ul>
+<li>Try <code>primary is .ok value</code>.</li>
+<li>Only if that fails, try <code>fallback is .ok value</code>.</li>
+<li>If either succeeds, the branch runs and returns <code>value</code>.</li>
+</ul>
+<p>If you want to use a binding after an <code>or</code>, bind the <em>same name</em> on every
+success path (as above). If the two sides bind different names, neither name is
+guaranteed to exist after the <code>or</code>.</p>
+<h2 id="grouping-conditions-with---"><a class="header" href="#grouping-conditions-with---">Grouping conditions with <code>{ ... }</code></a></h2>
+<p><code>not</code>, <code>and</code>, and <code>or</code> have precedence (<code>not</code> &gt; <code>and</code> &gt; <code>or</code>). To make
+grouping explicit, you can use <code>{ ... }</code> <em>inside a condition</em>:</p>
+<pre><code class="language-par">dec EmptyOrSpace : [Result&lt;String, String&gt;] Bool
+def EmptyOrSpace = [result] if {
+  result is .ok s and { String.Equals(s, "") or String.Equals(s, " ") }
+    =&gt; .true!,
+  else =&gt; .false!,
+}
+</code></pre>
+<p>These braces group the condition. They are different from the braces after
+<code>if</code> in <code>if { ... }</code>, which contain the branches.</p>
+<h2 id="not-bindings-move-to-the-failure-path"><a class="header" href="#not-bindings-move-to-the-failure-path"><code>not</code>: bindings move to the failure path</a></h2>
+<p><code>not</code> is different from most languages here: it flips success and failure, and
+that flip also affects bindings. Any bindings introduced inside the condition
+end up on the <em>failure</em> path of <code>not</code>.</p>
+<pre><code class="language-par">dec UseOrError : [Result&lt;String, String&gt;] String
+def UseOrError = [result] if {
+  not result is .ok value =&gt; "error",
+  else =&gt; value,
+}
+</code></pre>
+<p>Read it carefully:</p>
+<ul>
+<li><code>result is .ok value</code> would succeed on <code>.ok value</code>.</li>
+<li><code>not</code> flips success and failure.</li>
+<li>So the <code>else</code> branch is the path where <code>result is .ok value</code> holds, and
+<code>value</code> is available there.</li>
+</ul>
+<p>Because <code>or</code> only evaluates its right side when the left side fails, you can
+combine <code>not</code> and <code>or</code> in a way that “unlocks” bindings on the right:</p>
+<pre><code class="language-par">dec NonEmptyOrError : [Result&lt;String, String&gt;] String
+def NonEmptyOrError = [result] if {
+  not result is .ok str or String.Equals(str, "") =&gt; "bad input",
+  else =&gt; str,
+}
+</code></pre>
+<p>Follow the control flow:</p>
+<ul>
+<li>First evaluate <code>not result is .ok str</code>.</li>
+<li>The right side <code>String.Equals(str, "")</code> runs only if the left side fails.</li>
+<li>The left side fails exactly when <code>result is .ok str</code> succeeds.</li>
+<li>That is why <code>str</code> is available on the right side and in the <code>else</code> branch.</li>
+</ul>
+<p>This also works with grouped conditions:</p>
+<pre><code class="language-par">dec AddBothOrZero : [Result&lt;String, Int&gt;, Result&lt;String, Int&gt;] Int
+def AddBothOrZero = [left, right] if {
+  not { left is .ok x and right is .ok y } =&gt; 0,
+  else =&gt; Int.Add(x, y),
+}
+</code></pre>
+<p>Read it the same way: <code>x</code> and <code>y</code> are bound by the condition inside <code>{ ... }</code>,
+and because of <code>not</code>, they become available on the <code>else</code> path.</p>
+<h3 id="a-quick-comparison-java-optional"><a class="header" href="#a-quick-comparison-java-optional">A quick comparison (Java Optional)</a></h3>
+<p>In Java, the same idea often becomes “check, then get”:</p>
+<pre><code class="language-java">if (result.isEmpty() || result.get().isEmpty()) {
+    log("bad input");
+    return;
+}
+var str = result.get();
+log(str);
+</code></pre>
+<p>Par keeps the match and the predicate together in one place.</p>
+<h2 id="standalone-boolean-expressions"><a class="header" href="#standalone-boolean-expressions">Standalone boolean expressions</a></h2>
+<p>You can also compute booleans directly:</p>
+<pre><code class="language-par">let ok = left or right
+</code></pre>
+<p>Bindings created inside such a boolean expression stay <strong>inside</strong> that
+expression:</p>
+<pre><code class="language-par">let ok = result is .ok msg and String.Equals(msg, "")
+// `msg` is not available here
+</code></pre>
+<p>Use <code>if</code> when you want bindings to escape into a branch.</p>
+<h2 id="if-in-process-syntax"><a class="header" href="#if-in-process-syntax"><code>if</code> in process syntax</a></h2>
+<p>In process syntax, branches contain <em>process code</em> in braces, and execution can
+fall through after the <code>if</code>.</p>
+<p>The multi-branch form looks like:</p>
+<pre><code class="language-par">if {
+  &lt;condition&gt; =&gt; { &lt;process&gt; }
+  ...
+  else =&gt; { &lt;process&gt; }
+}
+</code></pre>
+<p>(No commas here — branches are separated by whitespace, like <code>.case { ... }</code>.)</p>
+<p>If you haven’t seen process syntax yet, start with <a href="quality_of_life/../process_syntax.html">The Process Syntax</a>.
+In short: <code>do { ... } in expr</code> runs the process inside the braces, then
+continues as the expression after <code>in</code>.</p>
+<pre><code class="language-par">dec Show : [Result&lt;String, String&gt;] !
+def Show = [result] do {
+  if {
+    result is .ok msg =&gt; { Debug.Log(msg) }
+    else =&gt; { Debug.Log("bad") }
+  }
+  Debug.Log("after") // fallthrough
+} in !
+</code></pre>
+<p>Just like in the expression form, branches are checked top to bottom and the
+first matching branch runs. After the <code>if { ... }</code> finishes, the process
+continues with the fallthrough code.</p>
+<h3 id="single-condition-process-if"><a class="header" href="#single-condition-process-if">Single-condition process <code>if</code></a></h3>
+<p>There is also a special single-condition form:</p>
+<pre><code class="language-par">if &lt;condition&gt; =&gt; { &lt;process&gt; }
+&lt;more process code&gt;
+</code></pre>
+<p>Here <code>&lt;more process code&gt;</code> acts as the <code>else</code> branch and also as the
+fallthrough, which is great for early exits.</p>
+<p>This is a very common style for guard clauses: “if the input is bad, exit;
+otherwise continue”.</p>
+<pre><code class="language-par">dec DefaultIfEmpty : [String] String
+def DefaultIfEmpty = [text] chan out {
+  if String.Equals(text, "") =&gt; {
+    out &lt;&gt; "&lt;empty&gt;"
+  }
+  out &lt;&gt; text
+}
+</code></pre>
+<p>We use <code>chan</code> here so we can return early: linking <code>out &lt;&gt; "&lt;empty&gt;"</code> ends the
+process immediately.</p>
+<p>A common style is to use a single-condition <code>if</code> as a guard:</p>
+<pre><code class="language-par">dec LogNonEmptyOk : [Result&lt;String, String&gt;] !
+def LogNonEmptyOk = [result] chan exit {
+  if not result is .ok str or String.Equals(str, "") =&gt; { exit! }
+  Debug.Log(str)
+  exit!
+}
+</code></pre>
+<p>Read it as: “if the input is bad, exit; otherwise, <code>str</code> is bound and safe to
+use”.</p>
+<h2 id="omitting-else-in-if---"><a class="header" href="#omitting-else-in-if---">Omitting <code>else</code> in <code>if { ... }</code></a></h2>
+<p>The multi-branch <code>if { ... }</code> form may omit <code>else</code> <strong>only if the conditions are
+exhaustive</strong>. This is checked by types.</p>
+<p>For example, this works because <code>cmp</code> has type <code>Ordering</code>:</p>
+<pre><code class="language-par">let cmp = Int.Compare(x, y) in
+if {
+  cmp is .less! =&gt; "less",
+  cmp is .equal! =&gt; "equal",
+  cmp is .greater! =&gt; "greater",
+}
+</code></pre>
+<pre><code class="language-par">if {
+  list is .item(x) xs =&gt; { ... }
+  list is .end! =&gt; { ... }
+}
+</code></pre>
+<p>In process syntax, code after the <code>if { ... }</code> is still just a fallthrough, not
+an implicit <code>else</code>.</p>
+<blockquote>
+<p>The exhaustiveness checking in <code>if</code> currently isn’t perfect, and won’t correctly handle more complex combinations.</p>
+</blockquote>
+<h2 id="wrap-up"><a class="header" href="#wrap-up">Wrap-up</a></h2>
+<ul>
+<li>Expression <code>if { ... }</code> returns a value.</li>
+<li><code>is</code> matches an <code>either</code> and always includes a payload pattern.</li>
+<li><code>and</code>/<code>or</code>/<code>not</code> short-circuit and carry bindings from <code>is</code> through the paths.</li>
+<li>Standalone boolean expressions keep their bindings local.</li>
+<li>In process syntax, multi-branch <code>if { ... }</code> falls through.</li>
+<li>The single-condition process form also uses the following code as an <code>else</code>.</li>
+</ul>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="pipes"><a class="header" href="#pipes">Pipes</a></h1>
+<p>Pipes are a piece of syntax sugar that keep a chain of operations readable.
+They do not add new behaviour to Par. They just let you write the
+“do this, then that” story from left to right without inventing throwaway
+names.</p>
+<h2 id="a-first-taste"><a class="header" href="#a-first-taste">A first taste</a></h2>
+<p>Here are some helper functions that operate on numbers:</p>
+<pre><code class="language-par">def Add    = [m: Nat, n: Nat] Nat.Add(m, n)
+def Double = [n: Nat] Nat.Add(n, n)
+def Square = [n: Nat] Nat.Mul(n, n)
+</code></pre>
+<p>Without pipes you call them inside one another:</p>
+<pre><code class="language-par">let result = Square(Add(3, Double(4)))  // = 196
+</code></pre>
+<p>With pipes you can say the same thing in the order you want to read it:</p>
+<pre><code class="language-par">let result = 3
+  -&gt; Add(Double(4))
+  -&gt; Square
+</code></pre>
+<p>The pipe feeds the value on the left into the <strong>first argument</strong> of the
+function on the right. Nothing else changes — the two version above do
+the exact same thing.</p>
+<h2 id="expression-semantics"><a class="header" href="#expression-semantics">Expression semantics</a></h2>
+<p>Whenever you see</p>
+<pre><code class="language-par">value -&gt; Func(args)
+</code></pre>
+<p>read it as</p>
+<pre><code class="language-par">Func(value, args)
+</code></pre>
+<p>It helps to think of <code>-&gt;Func</code> as one of the operations in the sequence, just
+like <code>(args)</code> or <code>.case { ... }</code>. You can even rewrite the earlier example as
+<code>value -&gt;Func (args)</code> to make this explicit.</p>
+<pre><code class="language-par">Account.Lookup(name)
+  -&gt;Auth.Check
+  .case {
+    .ok user   =&gt; user.balance
+    .err _     =&gt; 0
+  }
+</code></pre>
+<p>If you need to push the value into a later argument, wrap the call in braces so
+the whole expression becomes the operation:</p>
+<pre><code class="language-par">value -&gt; {Func(arg1)}(arg3)  // == Func(arg1, value, arg3)
+</code></pre>
+<h2 id="pipes-as-commands"><a class="header" href="#pipes-as-commands">Pipes as commands</a></h2>
+<p>In process syntax every command “uses” the variable on its left and stores the
+result back into that same variable. Pipes follow the same rule, which means
+you can treat any function as if it were a built-in command.</p>
+<pre><code class="language-par">dec Push : [List&lt;Nat&gt;, Nat] List&lt;Nat&gt;
+def Push = [stack, value] .item(value) stack
+
+let stack = *(1, 2, 3)
+stack-&gt;Push(4)
+// exactly the same as: let stack = Push(stack, 4)
+</code></pre>
+<p>Pipes make destructuring commands pleasant too. Take a <code>Pop</code> function that
+returns a head and a tail:</p>
+<pre><code class="language-par">dec Pop : [List&lt;Nat&gt;] (Option&lt;Nat&gt;) List&lt;Nat&gt;
+def Pop = [list] list.case {
+  .end! =&gt; (.err!) .end!,
+  .item(x) xs =&gt; (.ok x) xs,
+}
+
+let numbers = *(10, 20, 30)
+numbers-&gt;Pop[top]
+// top     : Option&lt;Nat&gt;
+// numbers : List&lt;Nat&gt;  -- now *(20, 30)
+</code></pre>
+<p>Again, the command is just a prettier spelling of
+<code>let (top) numbers = Pop(numbers)</code>.</p>
+<p>This is the reason the pipe feeds the <strong>first</strong> argument: it lets you extend
+the familiar <code>value.operation</code> sequences that already exist in the language
+without introducing special cases.</p>
+<h2 id="wrapping-up"><a class="header" href="#wrapping-up">Wrapping up</a></h2>
+<ul>
+<li>Pipes keep left-to-right reading order while preserving Par’s evaluation
+rules. Drop them and you get the original nested calls back.</li>
+<li>They play nicely with the rest of the syntax: mix them with <code>case</code>, <code>.</code>
+selections, further commands — anything that already appends to the sequence.</li>
+<li>If the first argument is not the one you need, braces give you full control.</li>
+</ul>
+<p>Whenever you notice yourself inventing a <code>tmp</code> variable simply to pass it to
+another function, try a pipe — it’s often all the ceremony you actually need.</p>
 
                     </main>
 

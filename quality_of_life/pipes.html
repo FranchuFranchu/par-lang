@@ -3,7 +3,7 @@
     <head>
         <!-- Book generated using mdBook -->
         <meta charset="UTF-8">
-        <title>Forall - Par Documentation</title>
+        <title>Pipes - Par Documentation</title>
 
 
         <!-- Custom HTML head -->
@@ -131,7 +131,7 @@
                         <a href="https://github.com/faiface/par-lang/tree/main/docs" title="Git repository" aria-label="Git repository">
                             <i id="git-repository-button" class="fa fa-github"></i>
                         </a>
-                        <a href="https://github.com/faiface/par-lang/edit/main/docs/src/types/forall.md" title="Suggest an edit" aria-label="Suggest an edit">
+                        <a href="https://github.com/faiface/par-lang/edit/main/docs/src/quality_of_life/pipes.md" title="Suggest an edit" aria-label="Suggest an edit">
                             <i id="git-edit-button" class="fa fa-edit"></i>
                         </a>
 
@@ -160,97 +160,97 @@
 
                 <div id="content" class="content">
                     <main>
-                        <h1 id="forall"><a class="header" href="#forall">Forall</a></h1>
-<p>What about <em>generic</em> functions? Or generic values?</p>
-<p>We already know about <a href="../structure/definitions_and_declarations.html">generic types</a>. For example, here’s
-a typical optional type, as present in many languages:</p>
-<pre><code class="language-par">type Option&lt;a&gt; = either {
-  .none!,
-  .some a,
+                        <h1 id="pipes"><a class="header" href="#pipes">Pipes</a></h1>
+<p>Pipes are a piece of syntax sugar that keep a chain of operations readable.
+They do not add new behaviour to Par. They just let you write the
+“do this, then that” story from left to right without inventing throwaway
+names.</p>
+<h2 id="a-first-taste"><a class="header" href="#a-first-taste">A first taste</a></h2>
+<p>Here are some helper functions that operate on numbers:</p>
+<pre><code class="language-par">def Add    = [m: Nat, n: Nat] Nat.Add(m, n)
+def Double = [n: Nat] Nat.Add(n, n)
+def Square = [n: Nat] Nat.Mul(n, n)
+</code></pre>
+<p>Without pipes you call them inside one another:</p>
+<pre><code class="language-par">let result = Square(Add(3, Double(4)))  // = 196
+</code></pre>
+<p>With pipes you can say the same thing in the order you want to read it:</p>
+<pre><code class="language-par">let result = 3
+  -&gt; Add(Double(4))
+  -&gt; Square
+</code></pre>
+<p>The pipe feeds the value on the left into the <strong>first argument</strong> of the
+function on the right. Nothing else changes — the two version above do
+the exact same thing.</p>
+<h2 id="expression-semantics"><a class="header" href="#expression-semantics">Expression semantics</a></h2>
+<p>Whenever you see</p>
+<pre><code class="language-par">value -&gt; Func(args)
+</code></pre>
+<p>read it as</p>
+<pre><code class="language-par">Func(value, args)
+</code></pre>
+<p>It helps to think of <code>-&gt;Func</code> as one of the operations in the sequence, just
+like <code>(args)</code> or <code>.case { ... }</code>. You can even rewrite the earlier example as
+<code>value -&gt;Func (args)</code> to make this explicit.</p>
+<pre><code class="language-par">Account.Lookup(name)
+  -&gt;Auth.Check
+  .case {
+    .ok user   =&gt; user.balance
+    .err _     =&gt; 0
+  }
+</code></pre>
+<p>If you need to push the value into a later argument, wrap the call in braces so
+the whole expression becomes the operation:</p>
+<pre><code class="language-par">value -&gt; {Func(arg1)}(arg3)  // == Func(arg1, value, arg3)
+</code></pre>
+<h2 id="pipes-as-commands"><a class="header" href="#pipes-as-commands">Pipes as commands</a></h2>
+<p>In process syntax every command “uses” the variable on its left and stores the
+result back into that same variable. Pipes follow the same rule, which means
+you can treat any function as if it were a built-in command.</p>
+<pre><code class="language-par">dec Push : [List&lt;Nat&gt;, Nat] List&lt;Nat&gt;
+def Push = [stack, value] .item(value) stack
+
+let stack = *(1, 2, 3)
+stack-&gt;Push(4)
+// exactly the same as: let stack = Push(stack, 4)
+</code></pre>
+<p>Pipes make destructuring commands pleasant too. Take a <code>Pop</code> function that
+returns a head and a tail:</p>
+<pre><code class="language-par">dec Pop : [List&lt;Nat&gt;] (Option&lt;Nat&gt;) List&lt;Nat&gt;
+def Pop = [list] list.case {
+  .end! =&gt; (.err!) .end!,
+  .item(x) xs =&gt; (.ok x) xs,
 }
-</code></pre>
-<p>In Par, generic type definitions use the familiar angle bracket syntax. The parameters to those,
-such as <code>a</code> for <code>Option&lt;a&gt;</code> may be replaced with anything, such as <code>Option&lt;Int&gt;</code>. The resulting type is,
-however, always concrete.</p>
-<p>Now consider these two definitions:</p>
-<pre><code class="language-par">def None: Option&lt;String&gt; = .none!
 
-dec Swap : [(String, Int)!] (Int, String)!
-def Swap = [pair]
-  let (first, second)! = pair
-  in (second, first)!
+let numbers = *(10, 20, 30)
+numbers-&gt;Pop[top]
+// top     : Option&lt;Nat&gt;
+// numbers : List&lt;Nat&gt;  -- now *(20, 30)
 </code></pre>
-<p>Both are defined in terms of concrete types, but don’t use them: <code>.none!</code> is a valid value for
-any <code>Option&lt;a&gt;</code>, and swapping a pair works regardless of its content.</p>
-<p>To make these work with anything, we employ <em>forall</em> types!</p>
-<p>In Par, <strong><em>forall</em> types:</strong></p>
+<p>Again, the command is just a prettier spelling of
+<code>let (top) numbers = Pop(numbers)</code>.</p>
+<p>This is the reason the pipe feeds the <strong>first</strong> argument: it lets you extend
+the familiar <code>value.operation</code> sequences that already exist in the language
+without introducing special cases.</p>
+<h2 id="wrapping-up"><a class="header" href="#wrapping-up">Wrapping up</a></h2>
 <ul>
-<li><strong>Don’t use angle brackets.</strong> Instead they are functions taking types.</li>
-<li><strong>Are not inferred.</strong> Calling a generic function requires specifying the types.</li>
-<li><strong>Are first-class!</strong> It’s possible to store and pass generic values around, without them losing
-their genericity.</li>
+<li>Pipes keep left-to-right reading order while preserving Par’s evaluation
+rules. Drop them and you get the original nested calls back.</li>
+<li>They play nicely with the rest of the syntax: mix them with <code>case</code>, <code>.</code>
+selections, further commands — anything that already appends to the sequence.</li>
+<li>If the first argument is not the one you need, braces give you full control.</li>
 </ul>
-<p>If you want generics inferred at the use site, see <a href="./implicit_generics.html">Implicit generics</a>.</p>
-<p>A forall type <strong>consists of two parts:</strong></p>
-<ul>
-<li>A lower-case type variable enclosed in square brackets, and prefixed with the keyword <code>type</code>.</li>
-<li>The result type, which uses this type variable.</li>
-</ul>
-<pre><code class="language-par">dec None : [type a] Option&lt;a&gt;
-
-dec Swap : [type a] [type b] [(a, b)!] (b, a)!
-</code></pre>
-<p>After erasing the previous concrete definitions for <code>None</code>, these will be their generic types. As we can
-see, these look just like functions, but taking types!</p>
-<p>If the result of a forall type is another forall types — like with <code>Swap</code> — we can use syntax sugar to
-put them both in one pair of square brackets:</p>
-<pre><code class="language-par">dec Swap : [type a, b] [(a, b)!] (b, a)!
-</code></pre>
-<p>This looks better. The two ways are, however, completely equivalent.</p>
-<p>Just like functions, foralls are <a href="TODO"><strong>linear</strong></a>. Variables containing them can’t be dropped, nor
-copied, only destructed by calling.</p>
-<h2 id="construction"><a class="header" href="#construction">Construction</a></h2>
-<p>Values of forall types are constructed the same way as functions, except the argument is a type
-variable and prefixed with the keyword <code>type</code>.</p>
-<p>Completing the definitions above:</p>
-<pre><code class="language-par">dec None : [type a] Option&lt;a&gt;
-def None = [type a] .none!
-
-dec Swap : [type a, b] [(a, b)!] (b, a)!
-def Swap = [type a, b] [pair]
-  let (first, second)! = pair
-  in (second, first)!
-</code></pre>
-<blockquote>
-<p>A common complaint at this point is:
-<strong>Why do I have to write <code>[type a, b]</code> in both the declaration, and the definition?</strong> After all,
-it doesn’t seem like they’re used in the definition. However, they are! What’s the type of <code>first</code>?
-It’s <code>a</code>. And <code>second</code>? It’s <code>b</code>. If you called them <code>[type kek, dek]</code>, they would be <code>kek</code> and <code>dek</code>.
-Par’s type checker never makes type names up.</p>
-<p>Additionally, if you do end up needing to use those type variables — for example, to call another
-generic function — they will be right at hand.</p>
-</blockquote>
-<h2 id="destruction"><a class="header" href="#destruction">Destruction</a></h2>
-<p>Using a <em>forall</em> value looks the same as calling a function, except the argument is a concrete type,
-prefixed with the keyword <code>type</code>.</p>
-<pre><code class="language-par">def NoneInt = None(type Int)  // type inferred as `Option&lt;Int&gt;`
-
-def Pair    = ("Hello!", 42)!
-def Swapped = Swap(type String, Int)(Pair)
-//          = (42, "Hello!")!
-</code></pre>
+<p>Whenever you notice yourself inventing a <code>tmp</code> variable simply to pass it to
+another function, try a pipe — it’s often all the ceremony you actually need.</p>
 
                     </main>
 
                     <nav class="nav-wrapper" aria-label="Page navigation">
                         <!-- Mobile navigation buttons -->
-                            <a rel="prev" href="../types/function.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                            <a rel="prev" href="../quality_of_life/if.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                                 <i class="fa fa-angle-left"></i>
                             </a>
 
-                            <a rel="next prefetch" href="../types/implicit_generics.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
-                                <i class="fa fa-angle-right"></i>
-                            </a>
 
                         <div style="clear: both"></div>
                     </nav>
@@ -258,13 +258,10 @@ def Swapped = Swap(type String, Int)(Pair)
             </div>
 
             <nav class="nav-wide-wrapper" aria-label="Page navigation">
-                    <a rel="prev" href="../types/function.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                    <a rel="prev" href="../quality_of_life/if.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                         <i class="fa fa-angle-left"></i>
                     </a>
 
-                    <a rel="next prefetch" href="../types/implicit_generics.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
-                        <i class="fa fa-angle-right"></i>
-                    </a>
             </nav>
 
         </div>

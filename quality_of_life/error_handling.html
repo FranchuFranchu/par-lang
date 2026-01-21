@@ -12,21 +12,21 @@
         <meta name="viewport" content="width=device-width, initial-scale=1">
         <meta name="theme-color" content="#ffffff">
 
-        <link rel="icon" href="favicon.svg">
-        <link rel="shortcut icon" href="favicon.png">
-        <link rel="stylesheet" href="css/variables.css">
-        <link rel="stylesheet" href="css/general.css">
-        <link rel="stylesheet" href="css/chrome.css">
-        <link rel="stylesheet" href="css/print.css" media="print">
+        <link rel="icon" href="../favicon.svg">
+        <link rel="shortcut icon" href="../favicon.png">
+        <link rel="stylesheet" href="../css/variables.css">
+        <link rel="stylesheet" href="../css/general.css">
+        <link rel="stylesheet" href="../css/chrome.css">
+        <link rel="stylesheet" href="../css/print.css" media="print">
 
         <!-- Fonts -->
-        <link rel="stylesheet" href="FontAwesome/css/font-awesome.css">
-        <link rel="stylesheet" href="fonts/fonts.css">
+        <link rel="stylesheet" href="../FontAwesome/css/font-awesome.css">
+        <link rel="stylesheet" href="../fonts/fonts.css">
 
         <!-- Highlight.js Stylesheets -->
-        <link rel="stylesheet" id="highlight-css" href="highlight.css">
-        <link rel="stylesheet" id="tomorrow-night-css" href="tomorrow-night.css">
-        <link rel="stylesheet" id="ayu-highlight-css" href="ayu-highlight.css">
+        <link rel="stylesheet" id="highlight-css" href="../highlight.css">
+        <link rel="stylesheet" id="tomorrow-night-css" href="../tomorrow-night.css">
+        <link rel="stylesheet" id="ayu-highlight-css" href="../ayu-highlight.css">
 
         <!-- Custom theme stylesheets -->
 
@@ -35,11 +35,11 @@
 
         <!-- Provide site root to javascript -->
         <script>
-            var path_to_root = "";
+            var path_to_root = "../";
             var default_theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? "navy" : "light";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="toc.js"></script>
+        <script src="../toc.js"></script>
     </head>
     <body>
     <div id="body-container">
@@ -91,7 +91,7 @@
             <!-- populated by js -->
             <mdbook-sidebar-scrollbox class="sidebar-scrollbox"></mdbook-sidebar-scrollbox>
             <noscript>
-                <iframe class="sidebar-iframe-outer" src="toc.html"></iframe>
+                <iframe class="sidebar-iframe-outer" src="../toc.html"></iframe>
             </noscript>
             <div id="sidebar-resize-handle" class="sidebar-resize-handle">
                 <div class="sidebar-resize-indicator"></div>
@@ -125,13 +125,13 @@
                     <h1 class="menu-title">Par Documentation</h1>
 
                     <div class="right-buttons">
-                        <a href="print.html" title="Print this book" aria-label="Print this book">
+                        <a href="../print.html" title="Print this book" aria-label="Print this book">
                             <i id="print-button" class="fa fa-print"></i>
                         </a>
                         <a href="https://github.com/faiface/par-lang/tree/main/docs" title="Git repository" aria-label="Git repository">
                             <i id="git-repository-button" class="fa fa-github"></i>
                         </a>
-                        <a href="https://github.com/faiface/par-lang/edit/main/docs/src/error_handling.md" title="Suggest an edit" aria-label="Suggest an edit">
+                        <a href="https://github.com/faiface/par-lang/edit/main/docs/src/quality_of_life/error_handling.md" title="Suggest an edit" aria-label="Suggest an edit">
                             <i id="git-edit-button" class="fa fa-edit"></i>
                         </a>
 
@@ -174,7 +174,7 @@
 <pre><code class="language-par">def Main: ! = chan exit {
   let console = Console.Open
 
-  let path = Os.PathFromString("logs.txt")
+  let path = Os.Path("logs.txt")
   path.createOrAppendToFile.case {
     .err e =&gt; {
       console.print(e)
@@ -188,7 +188,7 @@
 <p>A few things to note about this pattern:</p>
 <p>The <code>chan exit</code> creates a channel called <code>exit</code> of type <code>?</code> — <a href="./processes/duality.html">the continuation type</a>, which is dual to our <code>Main</code> function’s return type <code>!</code>. The <code>exit!</code> syntax is the <em>break</em> command applied to this continuation, which ends the process.</p>
 <p>After the <code>.case</code> block, the <code>writer</code> variable is available in the surrounding scope. This is how process-scoped variables work in Par — variables bound in <code>.case</code> branches continue to exist after the case analysis.</p>
-<pre><code class="language-par">  writer.writeString("[INFO] First new log\n").case {
+<pre><code class="language-par">  writer.write("[INFO] First new log\n").case {
     .err e =&gt; {
       console.print(e)
       console.close
@@ -197,8 +197,8 @@
     .ok =&gt; {}
   }
 </code></pre>
-<p>In <a href="./process_syntax.html">process syntax</a>, when we use <code>.ok =&gt;</code>, the subject of the command (<code>writer</code>) gets updated to the payload of the .ok branch. Since <code>.writeString</code> returns the same <code>Os.Writer</code> type on success, <code>writer</code> remains usable.</p>
-<pre><code class="language-par">  writer.writeString("[INFO] Second new log\n").case {
+<p>In <a href="./process_syntax.html">process syntax</a>, when we use <code>.ok =&gt;</code>, the subject of the command (<code>writer</code>) gets updated to the payload of the .ok branch. Since <code>.write</code> returns the same <code>Os.Writer</code> type on success, <code>writer</code> remains usable.</p>
+<pre><code class="language-par">  writer.write("[INFO] Second new log\n").case {
     .err e =&gt; {
       console.print(e)
       console.close
@@ -208,7 +208,7 @@
   }
 </code></pre>
 <p>And finish by closing the file:</p>
-<pre><code class="language-par">  writer.close(.ok!).case {
+<pre><code class="language-par">  writer.close.case {
     .err e =&gt; {
       console.print(e)
       console.close
@@ -224,7 +224,7 @@
 <pre><code class="language-par">def Main: ! = chan exit {
   let console = Console.Open
 
-  let path = Os.PathFromString("logs.txt")
+  let path = Os.Path("logs.txt")
   path.createOrAppendToFile.case {
     .err e =&gt; {
       console.print(e)
@@ -234,7 +234,7 @@
     .ok writer =&gt; {}
   }
   
-  writer.writeString("[INFO] First new log\n").case {
+  writer.write("[INFO] First new log\n").case {
     .err e =&gt; {
       console.print(e)
       console.close
@@ -242,7 +242,7 @@
     }
     .ok =&gt; {}
   }
-  writer.writeString("[INFO] Second new log\n").case {
+  writer.write("[INFO] Second new log\n").case {
     .err e =&gt; {
       console.print(e)
       console.close
@@ -251,7 +251,7 @@
     .ok =&gt; {}
   }
 
-  writer.close(.ok!).case {
+  writer.close.case {
     .err e =&gt; {
       console.print(e)
       console.close
@@ -276,20 +276,20 @@
     exit!
   }
 
-  let path = Os.PathFromString("logs.txt")
+  let path = Os.Path("logs.txt")
   let try writer = path.createOrAppendToFile
   
-  writer.writeString("[INFO] First new log\n").try
-  writer.writeString("[INFO] Second new log\n").try
+  writer.write("[INFO] First new log\n").try
+  writer.write("[INFO] Second new log\n").try
 
-  writer.close(.ok!).try
+  writer.close.try
   console.close
   exit!
 }
 </code></pre>
 <p>Significantly shorter and more readable! The error handling is declared once and applies to all subsequent operations.</p>
 <h2 id="how-trycatchthrow-work-in-process-syntax"><a class="header" href="#how-trycatchthrow-work-in-process-syntax">How <code>try</code>/<code>catch</code>/<code>throw</code> Work in Process Syntax</a></h2>
-<p>Par’s error handling sugar is built around three keywords that desugar to explicit <code>Result</code> handling. Let’s understand how they work.</p>
+<p>Par’s error handling sugar is built around small, local keywords that desugar to explicit <code>Result</code> handling. Let’s understand how they work.</p>
 <h3 id="the-catch-statement"><a class="header" href="#the-catch-statement">The <code>catch</code> Statement</a></h3>
 <p>Before you can use <code>try</code> or <code>throw</code>, you must define a <code>catch</code> block in the same process. This restriction is crucial — the corresponding <code>try</code> and <code>throw</code> commands must be in the same sequential process as their <code>catch</code>, not in nested processes or expressions.</p>
 <pre><code class="language-par">catch &lt;pattern&gt; =&gt; {
@@ -336,7 +336,7 @@ exit!
 <p><code>try</code> appears in two contexts: <em>patterns</em> and <em>commands.</em></p>
 <h3 id="try-in-commands"><a class="header" href="#try-in-commands"><code>.try</code> in Commands</a></h3>
 <p>The <code>.try</code> postfix transforms verbose <code>Result</code> case analysis into clean linear code. Remember our original verbose version:</p>
-<pre><code class="language-par">writer.writeString("[INFO] First new log\n").case {
+<pre><code class="language-par">writer.write("[INFO] First new log\n").case {
   .err e =&gt; {
     console.print(e)
     console.close
@@ -346,7 +346,7 @@ exit!
 }
 </code></pre>
 <p>With <code>.try</code>, this becomes:</p>
-<pre><code class="language-par">writer.writeString("[INFO] First new log\n").try
+<pre><code class="language-par">writer.write("[INFO] First new log\n").try
 </code></pre>
 <p>The <code>.try</code> postfix desugars any command or expression returning a <code>Result</code>:</p>
 <pre><code class="language-par">variable.try
@@ -370,6 +370,7 @@ exit!
 source.poll.try[value]
 </code></pre>
 <p>After this command, <code>source</code> maintains its <code>Poll&lt;Os.Error, String&gt;</code> type and value contains the successfully polled <code>String</code>.</p>
+<!-- moved `default` to the end of this chapter -->
 <h3 id="the-concurrent-evaluation-restriction"><a class="header" href="#the-concurrent-evaluation-restriction">The Concurrent Evaluation Restriction</a></h3>
 <p>You might think this would work:</p>
 <pre><code class="language-par">let writer = path.createOrAppendToFile.try
@@ -457,18 +458,18 @@ config.getUserName.try
 </code></pre>
 <h2 id="labels-and-layered-error-handling"><a class="header" href="#labels-and-layered-error-handling">Labels and Layered Error Handling</a></h2>
 <p>Like <code>begin</code>/<code>loop</code>, <code>catch</code> blocks can be labeled for precise control:</p>
-<pre><code class="language-par">catch/label e =&gt; { ... }
+<pre><code class="language-par">catch@label e =&gt; { ... }
 </code></pre>
 <p>The corresponding <code>try</code> and <code>throw</code> commands reference the same label:</p>
-<pre><code class="language-par">let try/label value = result
-throw/label "Custom error"
+<pre><code class="language-par">let try@label value = result
+throw@label "Custom error"
 </code></pre>
 <p>Labels are selected by proximity and name, not by error type. The nearest <code>catch</code> with the matching label (or no label) is chosen. This allows different error types to be routed to different handlers:</p>
-<pre><code class="language-par">catch/fs e =&gt; { /* handle file system errors */ }
-catch/net e =&gt; { /* handle network errors */ }
+<pre><code class="language-par">catch@fs e =&gt; { /* handle file system errors */ }
+catch@net e =&gt; { /* handle network errors */ }
 
-let try/fs writer = path.createFile
-let try/net conn = url.connect
+let try@fs writer = path.createFile
+let try@net conn = url.connect
 </code></pre>
 <h3 id="throwing-to-previous-catch-blocks"><a class="header" href="#throwing-to-previous-catch-blocks">Throwing to Previous <code>catch</code> Blocks</a></h3>
 <p>A powerful pattern is using nested <code>catch</code> blocks for resource cleanup while delegating to outer blocks for shared error handling.</p>
@@ -505,26 +506,26 @@ ProcessTogether(resource, otherData)
     exit!
   }
 
-  let try reader = Os.PathFromString(src).openFile
-  catch/w e =&gt; { reader.close(.ok!); throw e }
+  let try reader = Os.Path(src).openFile
+  catch@w e =&gt; { reader.close; throw e }
 
-  let try/w writer = Os.PathFromString(dst).createOrReplaceFile
-  catch/r e =&gt; { writer.close(.ok!); throw e }
+  let try@w writer = Os.Path(dst).createOrReplaceFile
+  catch@r e =&gt; { writer.close; throw e }
 
-  reader.begin.read.try/r.case {
+  reader.begin.read.try@r.case {
     .end! =&gt; {
-      writer.close(.ok!).try
+      writer.close.try
       console.close
       exit!
     }
     .chunk(bytes) =&gt; {
-      writer.write(bytes).try/w
+      writer.write(bytes).try@w
       reader.loop
     }
   }
 }
 </code></pre>
-<p>Here, the <code>catch/r</code> and <code>catch/w</code> blocks provide resource-specific cleanup (closing file handles) but then throw to the main error handler for shared logic like printing the error and exiting.</p>
+<p>Here, the <code>catch@r</code> and <code>catch@w</code> blocks provide resource-specific cleanup (closing file handles) but then throw to the main error handler for shared logic like printing the error and exiting.</p>
 <p>This layered approach allows you to build sophisticated error handling hierarchies while keeping each level focused and clear.</p>
 <h2 id="propagating-errors-in-functions"><a class="header" href="#propagating-errors-in-functions">Propagating Errors in Functions</a></h2>
 <p>The examples so far have shown terminal error handling — printing errors and exiting. But often you want to propagate errors up to the caller. Here’s a utility function that reads an entire file’s contents:</p>
@@ -532,21 +533,59 @@ ProcessTogether(resource, otherData)
 def ReadAll = [path] chan return {
   catch e =&gt; { return &lt;&gt; .err e }
   let try reader = path.openFile
-  let parser = Bytes.ParseReader(type either{}, Os.Error)(reader)
+  let parser = Bytes.ParseReader(type Os.Error)(reader)
   let try contents = parser.remainder
   return &lt;&gt; .ok contents
 }
 </code></pre>
 <p>This function uses <code>Bytes.ParseReader</code> to convert the chunked <code>Bytes.Reader</code> from <code>path.openFile</code> into a parser that provides a convenient <code>.remainder</code> method for reading all contents at once. The <code>catch</code> block propagates any errors by linking them into an <code>.err</code> result, while success links the contents into an <code>.ok</code> result.</p>
+<h2 id="providing-defaults-with-default"><a class="header" href="#providing-defaults-with-default">Providing defaults with <code>default</code></a></h2>
+<p>Sometimes you don’t want to propagate an error — you want to replace it with a fallback and keep going. The <code>default</code> sugar does exactly that, and unlike <code>try</code>, it is completely standalone: it does not require a surrounding <code>catch</code>, and it is valid even in nested expression positions.</p>
+<ul>
+<li>
+<p>Postfix form (expressions/commands):</p>
+<pre><code class="language-par">let r1: Result&lt;!, Int&gt; = .ok 7
+let r2: Result&lt;!, Int&gt; = .err!
+
+let x = r1.default(0)   // x = 7
+let y = r2.default(0)   // y = 0
+</code></pre>
+<p>This desugars to a <code>.case</code> on the subject: on <code>.ok</code> it continues with the unwrapped value, on <code>.err</code> it evaluates the fallback expression and uses that value instead. Because it is a local rewrite, it can be used directly in <code>let</code> bindings and other expression contexts.</p>
+</li>
+<li>
+<p>Pattern form (including in receives):</p>
+<pre><code class="language-par">let default(0) n = Nat.FromString("oops")
+</code></pre>
+<p>The pattern binds on <code>.ok</code>, and binds the fallback expression on <code>.err</code>.</p>
+<p>Here’s a practical example that shows why the pattern form is particularly useful with receive commands. It counts word occurrences using a map; when a key is missing, it starts from <code>0</code>:</p>
+<pre><code class="language-par">dec Counts : [List&lt;String&gt;] List&lt;(String) Nat&gt;
+def Counts = [words] do {
+  let counts = Map.String(type Nat)(*())
+  words.begin.case {
+    .end! =&gt; {}
+    .item(word) =&gt; {
+      counts.entry(word)[default(0) count]
+      counts.put(Nat.Add(count, 1))
+      words.loop
+    }
+  }
+} in counts.list
+</code></pre>
+<p>In the <code>.item</code> branch, <code>counts.entry(word)</code> returns a <code>Result&lt;!, Nat&gt;</code> via a receive; <code>default(0)</code> seamlessly handles the missing case and binds <code>count</code> to <code>0</code>.</p>
+</li>
+</ul>
 
                     </main>
 
                     <nav class="nav-wrapper" aria-label="Page navigation">
                         <!-- Mobile navigation buttons -->
-                            <a rel="prev" href="processes/duality.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                            <a rel="prev" href="../quality_of_life/index.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                                 <i class="fa fa-angle-left"></i>
                             </a>
 
+                            <a rel="next prefetch" href="../quality_of_life/if.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                                <i class="fa fa-angle-right"></i>
+                            </a>
 
                         <div style="clear: both"></div>
                     </nav>
@@ -554,10 +593,13 @@ def ReadAll = [path] chan return {
             </div>
 
             <nav class="nav-wide-wrapper" aria-label="Page navigation">
-                    <a rel="prev" href="processes/duality.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                    <a rel="prev" href="../quality_of_life/index.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                         <i class="fa fa-angle-left"></i>
                     </a>
 
+                    <a rel="next prefetch" href="../quality_of_life/if.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                        <i class="fa fa-angle-right"></i>
+                    </a>
             </nav>
 
         </div>
@@ -570,13 +612,13 @@ def ReadAll = [path] chan return {
         </script>
 
 
-        <script src="elasticlunr.min.js"></script>
-        <script src="mark.min.js"></script>
-        <script src="searcher.js"></script>
+        <script src="../elasticlunr.min.js"></script>
+        <script src="../mark.min.js"></script>
+        <script src="../searcher.js"></script>
 
-        <script src="clipboard.min.js"></script>
-        <script src="highlight.js"></script>
-        <script src="book.js"></script>
+        <script src="../clipboard.min.js"></script>
+        <script src="../highlight.js"></script>
+        <script src="../book.js"></script>
 
         <!-- Custom JS scripts -->
 
