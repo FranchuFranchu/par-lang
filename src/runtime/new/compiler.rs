@@ -7,7 +7,6 @@
 use std::{collections::HashMap, fmt::Display, sync::Arc};
 
 use indexmap::IndexMap;
-use tokio::time::Instant;
 
 use crate::{
     location::Span,

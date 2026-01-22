@@ -1,4 +1,5 @@
-use std::sync::OnceLock;
+//! The freezer implements a Node -> Global function (roughly)
+//! This is used by the compiler to add pre-reduced nets to the arena
 
 use indexmap::IndexMap;
 
