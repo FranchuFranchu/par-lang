@@ -35,7 +35,6 @@ use crate::par::primitive::Primitive;
 
 use super::arena::*;
 use super::stats::Rewrites;
-use crate::runtime::FanBehavior;
 use std::sync::{Arc, Mutex};
 
 use tokio::sync::oneshot;
@@ -175,6 +174,19 @@ pub struct Package {
     /// How large the Instance must be.
     pub num_vars: usize,
 }
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+/// The behavior of a `Package` node when it interacts
+/// with a fan node (duplicate or erase)
+pub enum FanBehavior {
+    /// Expand the package and then duplicate/erase it
+    /// Used for side-effectful and top level packages
+    Expand,
+    /// Propagate the fan operator through the captures
+    /// Used in boxes.
+    Propagate,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Global {
     Indirect(GlobalPtr),
@@ -217,7 +229,7 @@ pub enum Shared {
 /// Values are either positive types or copyable external functions. They can all be duplicated if their
 /// subnodes are duplicable too.
 ///
-/// P is the type of children. Usually, this will be `GlobalPtr`, `Shared`, or `Box<Node>`
+/// P is the type of children. Usually, this will be `GlobalPtr`, `Shared`, or `Node`
 ///
 /// There are [`Linear`] values, [`Shared`] values, and [`Global`] values.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -292,8 +304,8 @@ pub enum Linear {
 impl From<UserData> for Linear {
     fn from(this: UserData) -> Linear {
         match this {
-            UserData::ExternalFn(p) => Linear::Value(Value::ExternalFn(p)),
-            UserData::ExternalArc(p) => Linear::Value(Value::ExternalArc(p)),
+            UserData::ExternalFn(p) => Linear::Value((Value::ExternalFn(p))),
+            UserData::ExternalArc(p) => Linear::Value((Value::ExternalArc(p))),
             UserData::Request(p) => Linear::Request(p),
         }
     }
@@ -836,10 +848,9 @@ impl<A: ArenaLike> Runtime<A> {
                             // TODO: Optimize this; we're reconstructing the `Either` branch.
                             // This could make us lose sharing.
                             self.link(
-                                Node::Linear(Linear::Value(Value::Either(
-                                    signal,
-                                    Box::new(payload),
-                                ))),
+                                Node::Linear(Linear::Value(
+                                    (Value::Either(signal, Box::new(payload))),
+                                )),
                                 root,
                             );
                         }

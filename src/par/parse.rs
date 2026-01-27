@@ -1015,8 +1015,47 @@ fn pattern_payload_recv_type(input: &mut Input) -> Result<Pattern> {
     .parse_next(input)
 }
 
+fn looks_like_condition(input: &Input) -> bool {
+    let mut depth = 0usize;
+    for token in input.iter() {
+        match token.kind {
+            TokenKind::LParen | TokenKind::LCurly | TokenKind::LBrack => {
+                depth += 1;
+            }
+            TokenKind::RParen | TokenKind::RCurly | TokenKind::RBrack => {
+                if depth == 0 {
+                    return false;
+                }
+                depth -= 1;
+            }
+            TokenKind::Comma | TokenKind::FatArrow => {
+                if depth == 0 {
+                    return false;
+                }
+            }
+            TokenKind::Is | TokenKind::And | TokenKind::Or | TokenKind::Not => {
+                if depth == 0 {
+                    return true;
+                }
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
 fn expression(input: &mut Input) -> Result<Expression> {
-    alt((expr_condition, expression_no_condition))
+    if looks_like_condition(input) {
+        let checkpoint = input.checkpoint();
+        match expr_condition.parse_next(input) {
+            Ok(expr) => return Ok(expr),
+            Err(ErrMode::Backtrack(_)) => {
+                input.reset(&checkpoint);
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    expression_no_condition
         .context(StrContext::Label("expression"))
         .parse_next(input)
 }
@@ -1028,6 +1067,10 @@ fn expression_no_condition(input: &mut Input) -> Result<Expression> {
         expr_let,
         expr_catch,
         expr_throw,
+        expr_type_in,
+        expr_poll,
+        expr_repoll,
+        expr_submit,
         expr_if,
         expr_do,
         expr_box,
@@ -1204,6 +1247,16 @@ fn expr_throw(input: &mut Input) -> Result<Expression> {
         .parse_next(input)
 }
 
+fn expr_type_in(input: &mut Input) -> Result<Expression> {
+    commit_after(t(TokenKind::Type), (typ, t(TokenKind::In), expression))
+        .map(|(pre, (typ, _in_tok, expr))| Expression::TypeIn {
+            span: pre.span.join(expr.span()),
+            typ,
+            expr: Box::new(expr),
+        })
+        .parse_next(input)
+}
+
 fn expr_if(input: &mut Input) -> Result<Expression> {
     commit_after(
         t(TokenKind::If),
@@ -1222,6 +1275,126 @@ fn expr_if(input: &mut Input) -> Result<Expression> {
         span: kw.span.join(close.span()),
         branches,
         else_: else_part.map(|(_, (_, else_expr), _)| Box::new(else_expr)),
+    })
+    .parse_next(input)
+}
+
+fn expr_poll(input: &mut Input) -> Result<Expression> {
+    commit_after(
+        t(TokenKind::Poll),
+        (
+            label,
+            t(TokenKind::LParen),
+            list0(expression),
+            t(TokenKind::RParen),
+            t(TokenKind::LCurly),
+            local_name,
+            t(TokenKind::FatArrow),
+            expression,
+            opt(t(TokenKind::Comma)),
+            t(TokenKind::Else),
+            cut_err((t(TokenKind::FatArrow), expression)),
+            opt(t(TokenKind::Comma)),
+            t(TokenKind::RCurly),
+        ),
+    )
+    .map(
+        |(
+            kw,
+            (
+                label,
+                _open,
+                clients,
+                _close,
+                _open2,
+                name,
+                _arrow,
+                then,
+                _comma1,
+                _else_kw,
+                (_, else_),
+                _comma2,
+                close,
+            ),
+        )| {
+            Expression::Poll {
+                span: kw.span.join(close.span()),
+                label,
+                clients,
+                name,
+                then: Box::new(then),
+                else_: Box::new(else_),
+            }
+        },
+    )
+    .parse_next(input)
+}
+
+fn expr_repoll(input: &mut Input) -> Result<Expression> {
+    commit_after(
+        t(TokenKind::Repoll),
+        (
+            label,
+            t(TokenKind::LParen),
+            list0(expression),
+            t(TokenKind::RParen),
+            t(TokenKind::LCurly),
+            local_name,
+            t(TokenKind::FatArrow),
+            expression,
+            opt(t(TokenKind::Comma)),
+            t(TokenKind::Else),
+            cut_err((t(TokenKind::FatArrow), expression)),
+            opt(t(TokenKind::Comma)),
+            t(TokenKind::RCurly),
+        ),
+    )
+    .map(
+        |(
+            kw,
+            (
+                label,
+                _open,
+                clients,
+                _close,
+                _open2,
+                name,
+                _arrow,
+                then,
+                _comma1,
+                _else_kw,
+                (_, else_),
+                _comma2,
+                close,
+            ),
+        )| {
+            Expression::Repoll {
+                span: kw.span.join(close.span()),
+                label,
+                clients,
+                name,
+                then: Box::new(then),
+                else_: Box::new(else_),
+            }
+        },
+    )
+    .parse_next(input)
+}
+
+fn expr_submit(input: &mut Input) -> Result<Expression> {
+    commit_after(
+        t(TokenKind::Submit),
+        (
+            label,
+            t(TokenKind::LParen),
+            list0(expression),
+            t(TokenKind::RParen),
+        ),
+    )
+    .map(|(kw, (label, _open, values, close))| Expression::Submit {
+        span: kw.span.join(close.span()),
+        label,
+        values,
     })
     .parse_next(input)
 }
@@ -1317,6 +1490,10 @@ fn cons_then(input: &mut Input) -> Result<Construct> {
         expr_throw,
         expr_catch,
         expr_do,
+        expr_type_in,
+        expr_poll,
+        expr_repoll,
+        expr_submit,
         application,
         expr_grouped,
     ))
@@ -1830,6 +2007,9 @@ fn apply_branch_default(input: &mut Input) -> Result<ApplyBranch> {
 fn process(input: &mut Input) -> Result<Process> {
     alt((
         proc_if,
+        proc_poll,
+        proc_repoll,
+        proc_submit,
         proc_let,
         proc_catch,
         proc_throw,
@@ -1907,6 +2087,148 @@ fn proc_telltypes(input: &mut Input) -> Result<Process> {
             )
         })
         .parse_next(input)
+}
+
+fn proc_poll(input: &mut Input) -> Result<Process> {
+    commit_after(
+        t(TokenKind::Poll),
+        (
+            label,
+            t(TokenKind::LParen),
+            list0(expression),
+            t(TokenKind::RParen),
+            t(TokenKind::LCurly),
+            local_name,
+            t(TokenKind::FatArrow),
+            t(TokenKind::LCurly),
+            opt(process),
+            t(TokenKind::RCurly),
+            opt(t(TokenKind::Comma)),
+            t(TokenKind::Else),
+            cut_err((
+                t(TokenKind::FatArrow),
+                t(TokenKind::LCurly),
+                opt(process),
+                t(TokenKind::RCurly),
+                opt(t(TokenKind::Comma)),
+            )),
+            t(TokenKind::RCurly),
+        ),
+    )
+    .map(
+        |(
+            kw,
+            (
+                label,
+                _open,
+                clients,
+                _close,
+                _open2,
+                name,
+                _arrow,
+                body_open,
+                then,
+                body_close,
+                _comma1,
+                _else_kw,
+                (_else_arrow, else_open, else_body, else_close, _comma2),
+                close,
+            ),
+        )| {
+            let then = then.unwrap_or(Process::Noop(body_open.span.join(body_close.span())));
+            let else_body =
+                else_body.unwrap_or(Process::Noop(else_open.span.join(else_close.span())));
+            Process::Poll {
+                span: kw.span.join(close.span()),
+                label,
+                clients,
+                name,
+                then: Box::new(then),
+                else_: Box::new(else_body),
+            }
+        },
+    )
+    .parse_next(input)
+}
+
+fn proc_repoll(input: &mut Input) -> Result<Process> {
+    commit_after(
+        t(TokenKind::Repoll),
+        (
+            label,
+            t(TokenKind::LParen),
+            list0(expression),
+            t(TokenKind::RParen),
+            t(TokenKind::LCurly),
+            local_name,
+            t(TokenKind::FatArrow),
+            t(TokenKind::LCurly),
+            opt(process),
+            t(TokenKind::RCurly),
+            opt(t(TokenKind::Comma)),
+            t(TokenKind::Else),
+            cut_err((
+                t(TokenKind::FatArrow),
+                t(TokenKind::LCurly),
+                opt(process),
+                t(TokenKind::RCurly),
+                opt(t(TokenKind::Comma)),
+            )),
+            t(TokenKind::RCurly),
+        ),
+    )
+    .map(
+        |(
+            kw,
+            (
+                label,
+                _open,
+                clients,
+                _close,
+                _open2,
+                name,
+                _arrow,
+                body_open,
+                then,
+                body_close,
+                _comma1,
+                _else_kw,
+                (_else_arrow, else_open, else_body, else_close, _comma2),
+                close,
+            ),
+        )| {
+            let then = then.unwrap_or(Process::Noop(body_open.span.join(body_close.span())));
+            let else_body =
+                else_body.unwrap_or(Process::Noop(else_open.span.join(else_close.span())));
+            Process::Repoll {
+                span: kw.span.join(close.span()),
+                label,
+                clients,
+                name,
+                then: Box::new(then),
+                else_: Box::new(else_body),
+            }
+        },
+    )
+    .parse_next(input)
+}
+
+fn proc_submit(input: &mut Input) -> Result<Process> {
+    commit_after(
+        t(TokenKind::Submit),
+        (
+            label,
+            t(TokenKind::LParen),
+            list0(expression),
+            t(TokenKind::RParen),
+        ),
+    )
+    .map(|(kw, (label, _open, values, close))| Process::Submit {
+        span: kw.span.join(close.span()),
+        label,
+        values,
+    })
+    .parse_next(input)
 }
 
 fn proc_if(input: &mut Input) -> Result<Process> {

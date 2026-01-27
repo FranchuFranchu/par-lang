@@ -1,9 +1,7 @@
-use crate::par::build_result::BuildConfig;
 use crate::par::build_result::BuildResult;
 use crate::par::types::Type;
 #[cfg(feature = "playground")]
 use crate::playground::Playground;
-use crate::runtime::compiler::Backend;
 use crate::spawn::TokioSpawn;
 use clap::{arg, command, value_parser, Command};
 use colored::Colorize;
@@ -48,6 +46,7 @@ fn main() {
         .subcommand(
             Command::new("run")
                 .about("Run a Par file in the CLI")
+                .arg(arg!(--stats "Print statistics after running the definition"))
                 .arg(arg!(<file> "The Par file to run").value_parser(value_parser!(PathBuf)))
                 .arg(arg!([definition] "The definition to run").default_value("Main"))
                 .arg(arg!(-f --flag <FLAG> ... "Set a flag")),
@@ -85,26 +84,23 @@ fn main() {
             run_playground(file.cloned());
         }
         Some(("run", args)) => {
+            let stats = *args.get_one::<bool>("stats").unwrap();
             let file = args.get_one::<PathBuf>("file").unwrap().clone();
             let definition = args.get_one::<String>("definition").unwrap().clone();
-            let flags = args.get_many::<String>("flag").into_iter().flatten();
-            run_definition(&flags.into(), file, definition);
+            run_definition(file, definition, stats);
         }
         Some(("check", args)) => {
             let files = args.get_many::<PathBuf>("file").unwrap().clone();
-            let flags = args.get_many::<String>("flag").into_iter().flatten();
-            let flags = BuildConfig::from(flags);
             for file in files {
                 println!("Checking file: {}", file.display());
-                let _ = check(&flags, file.clone());
+                let _ = check(file.clone());
             }
         }
         Some(("lsp", _)) => run_language_server(),
         Some(("test", args)) => {
             let file = args.get_one::<PathBuf>("file");
             let filter = args.get_one::<String>("filter");
-            let flags = args.get_many::<String>("flag").into_iter().flatten();
-            run_tests(&flags.into(), file.cloned(), filter.cloned());
+            run_tests(file.cloned(), filter.cloned());
         }
         _ => unreachable!(),
     }
@@ -153,7 +149,7 @@ fn run_playground(file: Option<PathBuf>) {
     .expect("egui crashed");
 }
 
-fn run_definition(config: &BuildConfig, file: PathBuf, definition: String) {
+fn run_definition(file: PathBuf, definition: String, print_stats: bool) {
     let runtime = tokio::runtime::Runtime::new().unwrap();
     runtime.block_on(async {
         let Ok(code) = File::open(&file).and_then(|mut file| {
@@ -167,7 +163,7 @@ fn run_definition(config: &BuildConfig, file: PathBuf, definition: String) {
         };
 
         let build = stacker::grow(32 * 1024 * 1024, || {
-            BuildResult::from_source(config, &code, file.into())
+            BuildResult::from_source(&code, file.into())
         });
         if let Some(error) = build.error() {
             println!("{}", error.display(Arc::from(code.as_str())).bright_red());
@@ -211,17 +207,17 @@ fn run_definition(config: &BuildConfig, file: PathBuf, definition: String) {
 
         let (root, reducer_future) = rt_compiled.start_and_instantiate(name).await;
 
-        root.continue_().await;
+        root.continue_();
         let stats = reducer_future.await;
 
-        println!("{}", stats.show(start.elapsed()));
-        if let Backend::New(new) = &rt_compiled.backend {
-            eprintln!("{}", new.arena.stats());
+        if print_stats {
+            eprintln!("{}", stats.show(start.elapsed()));
+            eprintln!("\tArena size: {}", rt_compiled.code.arena.memory_size());
         }
     });
 }
 
-fn check(config: &BuildConfig, file: PathBuf) -> Result<(), String> {
+fn check(file: PathBuf) -> Result<(), String> {
     let Ok(code) = File::open(&file).and_then(|mut file| {
         use std::io::Read;
         let mut buf = String::new();
@@ -233,7 +229,7 @@ fn check(config: &BuildConfig, file: PathBuf) -> Result<(), String> {
     };
 
     let build = stacker::grow(32 * 1024 * 1024, || {
-        BuildResult::from_source(&config, &code, file.into())
+        BuildResult::from_source(&code, file.into())
     });
     if let Some(error) = build.error() {
         let error_string = error.display(Arc::from(code.as_str()));
@@ -247,6 +243,6 @@ fn run_language_server() {
     language_server::language_server_main::main()
 }
 
-fn run_tests(config: &BuildConfig, file: Option<PathBuf>, filter: Option<String>) {
-    test_runner::run_tests(config, file, filter);
+fn run_tests(file: Option<PathBuf>, filter: Option<String>) {
+    test_runner::run_tests(file, filter);
 }

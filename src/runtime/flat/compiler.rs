@@ -16,7 +16,6 @@ use crate::{
         program::{CheckedModule, Definition},
         types::{visit, Type, TypeDefs, TypeError},
     },
-    runtime::FanBehavior,
 };
 
 use super::{
@@ -25,8 +24,8 @@ use super::{
     readback::Handle,
     reducer::{NetHandle, Reducer},
     runtime::{
-        Global, GlobalCont, Instance, Linker, Node, Package, PackageBody, PackagePtr, Runtime,
-        Value,
+        FanBehavior, Global, GlobalCont, Instance, Linker, Node, Package, PackageBody, PackagePtr,
+        Runtime, Value,
     },
 };
 pub type Result<T> = core::result::Result<T, String>;
@@ -682,6 +681,7 @@ impl Compiler {
                 self.compile_process(span, &body)?;
             }
             Process::Unreachable(span) => todo!(),
+            _ => todo!(),
         };
         Ok(())
     }
@@ -920,10 +920,8 @@ impl Compiled {
     pub fn new_reducer(&self) -> Reducer {
         Reducer::from(Runtime::from(self.arena.clone()))
     }
-    pub async fn instantiate(&self, handle: NetHandle, name: &GlobalName) -> Option<Handle> {
+    pub fn instantiate(&self, handle: NetHandle, name: &GlobalName) -> Option<Handle> {
         let package = self.get_with_name(name)?;
-        Handle::from_package(self.arena.clone(), handle, package)
-            .await
-            .ok()
+        Handle::from_package(self.arena.clone(), handle, package).ok()
     }
 }

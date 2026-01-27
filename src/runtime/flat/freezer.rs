@@ -5,6 +5,7 @@ use std::{collections::HashMap, sync::Arc};
 
 use indexmap::IndexMap;
 
+use super::runtime::FanBehavior;
 use super::{
     arena::{Arena, ArenaTrim, Index, TripleArena, HIGHER_HALF},
     runtime::{
@@ -12,7 +13,6 @@ use super::{
         SharedHole, SyncShared, Value,
     },
 };
-use crate::runtime::FanBehavior;
 
 pub struct Freezer<'a> {
     variable_map: IndexMap<(usize, usize), (usize, bool)>,

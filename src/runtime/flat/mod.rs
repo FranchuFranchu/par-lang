@@ -40,4 +40,3 @@ pub mod reducer;
 pub mod runtime;
 pub mod show;
 pub mod stats;
-pub mod transpiler;

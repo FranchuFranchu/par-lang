@@ -1,3 +1,4 @@
+pub use super::captures::{Captures, VariableUsage};
 use super::{
     language::{GlobalName, LocalName},
     primitive::Primitive,
@@ -8,7 +9,7 @@ use crate::{
     par::program::CheckedModule,
     runtime::Handle,
 };
-use indexmap::{IndexMap, IndexSet};
+use indexmap::IndexSet;
 use std::{
     fmt::{self, Write},
     future::Future,
@@ -17,10 +18,9 @@ use std::{
 };
 
 #[derive(Clone, Debug)]
-pub enum VariableUsage {
-    Unknown,
-    Copy,
-    Move,
+pub enum PollKind {
+    Poll,
+    Repoll,
 }
 
 #[derive(Clone, Debug)]
@@ -39,6 +39,25 @@ pub enum Process<Typ> {
         usage: VariableUsage,
         typ: Typ,
         command: Command<Typ>,
+    },
+    Poll {
+        span: Span,
+        kind: PollKind,
+        driver: LocalName,
+        point: LocalName,
+        clients: Vec<Arc<Expression<Typ>>>,
+        name: LocalName,
+        name_typ: Typ,
+        captures: Captures,
+        then: Arc<Self>,
+        else_: Arc<Self>,
+    },
+    Submit {
+        span: Span,
+        driver: LocalName,
+        point: LocalName,
+        values: Vec<Arc<Expression<Typ>>>,
+        captures: Captures,
     },
     Telltypes(Span, Arc<Self>),
     Block(Span, usize, Arc<Self>, Arc<Self>),
@@ -103,6 +122,8 @@ impl<Typ> Spanning for Process<Typ> {
         match self {
             Self::Let { span, .. } => span.clone(),
             Self::Do { span, .. } => span.clone(),
+            Self::Poll { span, .. } => span.clone(),
+            Self::Submit { span, .. } => span.clone(),
             Self::Telltypes(span, ..) => span.clone(),
             Self::Block(span, _, _, _) => span.clone(),
             Self::Goto(span, _, _) => span.clone(),
@@ -111,132 +132,7 @@ impl<Typ> Spanning for Process<Typ> {
     }
 }
 
-#[derive(Clone, Debug)]
-pub struct Captures {
-    pub names: IndexMap<LocalName, (Span, VariableUsage)>,
-}
-
-impl Default for Captures {
-    fn default() -> Self {
-        Self {
-            names: IndexMap::new(),
-        }
-    }
-}
-
-impl Captures {
-    pub fn new() -> Self {
-        Self {
-            names: IndexMap::new(),
-        }
-    }
-
-    pub fn single(name: LocalName, span: Span, usage: VariableUsage) -> Self {
-        let mut caps = Self::new();
-        caps.add(name, span, usage);
-        caps
-    }
-
-    pub fn extend(&mut self, other: Self) {
-        for (name, span) in other.names {
-            self.names.insert(name, span);
-        }
-    }
-
-    pub fn add(&mut self, name: LocalName, span: Span, usage: VariableUsage) {
-        self.names.insert(name, (span, usage));
-    }
-
-    pub fn remove(&mut self, name: &LocalName) -> Option<(Span, VariableUsage)> {
-        self.names.shift_remove(name)
-    }
-
-    pub fn contains(&self, name: &LocalName) -> bool {
-        self.names.contains_key(name)
-    }
-}
-
 impl Process<()> {
-    pub fn fix_captures(
-        &self,
-        loop_points: &IndexMap<Option<LocalName>, (LocalName, Captures)>,
-        blocks: &IndexMap<usize, Captures>,
-    ) -> (Arc<Self>, Captures) {
-        match self {
-            Self::Let {
-                span,
-                name,
-                annotation,
-                typ,
-                value: expression,
-                then: process,
-            } => {
-                let (process, mut caps) = process.fix_captures(loop_points, blocks);
-                caps.remove(name);
-                let (expression, caps1) = expression.fix_captures(loop_points, blocks, &caps);
-                caps.extend(caps1);
-                (
-                    Arc::new(Self::Let {
-                        span: span.clone(),
-                        name: name.clone(),
-                        annotation: annotation.clone(),
-                        typ: typ.clone(),
-                        value: expression,
-                        then: process,
-                    }),
-                    caps,
-                )
-            }
-            Self::Do {
-                span,
-                name,
-                usage: _usage,
-                typ,
-                command,
-            } => {
-                let (command, mut caps) = command.fix_captures(name, loop_points, blocks);
-                let usage = if caps.contains(name) {
-                    VariableUsage::Copy
-                } else {
-                    VariableUsage::Move
-                };
-                caps.add(name.clone(), span.clone(), VariableUsage::Unknown);
-                (
-                    Arc::new(Self::Do {
-                        span: span.clone(),
-                        name: name.clone(),
-                        usage,
-                        typ: typ.clone(),
-                        command,
-                    }),
-                    caps,
-                )
-            }
-            Self::Telltypes(span, process) => {
-                let (process, caps) = process.fix_captures(loop_points, blocks);
-                (Arc::new(Self::Telltypes(span.clone(), process)), caps)
-            }
-            Self::Block(span, index, body, process) => {
-                let (body, body_caps) = body.fix_captures(loop_points, blocks);
-                let mut blocks = blocks.clone();
-                blocks.insert(*index, body_caps);
-                let (process, caps) = process.fix_captures(loop_points, &blocks);
-                (
-                    Arc::new(Self::Block(span.clone(), *index, body, process)),
-                    caps,
-                )
-            }
-            Self::Goto(span, index, _) => {
-                let caps = blocks.get(index).cloned().unwrap();
-                (
-                    Arc::new(Self::Goto(span.clone(), *index, caps.clone())),
-                    caps,
-                )
-            }
-            Self::Unreachable(span) => (Arc::new(Self::Unreachable(span.clone())), Captures::new()),
-        }
-    }
-
     pub fn optimize(&self) -> Arc<Self> {
         match self {
             Self::Let {
@@ -271,16 +167,17 @@ impl Process<()> {
                         match expression.optimize().as_ref() {
                             Expression::Chan {
                                 chan_name: channel,
+                                chan_annotation: annotation,
                                 process,
                                 ..
                             } => {
-                                if name == channel {
+                                if name == channel && annotation.is_none() {
                                     return Arc::clone(process);
                                 } else {
                                     return Arc::new(Process::Let {
                                         span: span.clone(),
                                         name: channel.clone(),
-                                        annotation: None,
+                                        annotation: annotation.clone(),
                                         typ: (),
                                         value: Arc::new(Expression::Variable(
                                             span.clone(),
@@ -338,6 +235,42 @@ impl Process<()> {
                         Command::ReceiveType(parameter.clone(), process.optimize())
                     }
                 },
+            }),
+            Self::Poll {
+                span,
+                kind,
+                driver,
+                point,
+                clients,
+                name,
+                name_typ,
+                captures,
+                then,
+                else_,
+            } => Arc::new(Self::Poll {
+                span: span.clone(),
+                kind: kind.clone(),
+                driver: driver.clone(),
+                point: point.clone(),
+                clients: clients.iter().map(|e| e.optimize()).collect(),
+                name: name.clone(),
+                name_typ: name_typ.clone(),
+                captures: captures.clone(),
+                then: then.optimize(),
+                else_: else_.optimize(),
+            }),
+            Self::Submit {
+                span,
+                driver,
+                point,
+                values,
+                captures,
+            } => Arc::new(Self::Submit {
+                span: span.clone(),
+                driver: driver.clone(),
+                point: point.clone(),
+                values: values.iter().map(|e| e.optimize()).collect(),
+                captures: captures.clone(),
             }),
             Self::Telltypes(span, process) => {
                 Arc::new(Self::Telltypes(span.clone(), process.optimize()))
@@ -398,6 +331,26 @@ impl Process<Type> {
                 }
                 command.types_at_spans(program, consume);
             }
+            Process::Poll {
+                clients,
+                name,
+                name_typ,
+                then,
+                else_,
+                ..
+            } => {
+                for client in clients {
+                    client.types_at_spans(program, consume);
+                }
+                consume(name.span(), NameWithType::named(name, name_typ.clone()));
+                then.types_at_spans(program, consume);
+                else_.types_at_spans(program, consume);
+            }
+            Process::Submit { values, .. } => {
+                for value in values {
+                    value.types_at_spans(program, consume);
+                }
+            }
             Process::Telltypes(_, process) => {
                 process.types_at_spans(program, consume);
             }
@@ -407,113 +360,6 @@ impl Process<Type> {
             }
             Process::Goto(_, _, _) => {}
             Process::Unreachable(_) => {}
-        }
-    }
-}
-
-impl Command<()> {
-    pub fn fix_captures(
-        &self,
-        subject: &LocalName,
-        loop_points: &IndexMap<Option<LocalName>, (LocalName, Captures)>,
-        blocks: &IndexMap<usize, Captures>,
-    ) -> (Self, Captures) {
-        match self {
-            Self::Link(expression) => {
-                let (expression, caps) =
-                    expression.fix_captures(loop_points, blocks, &Captures::new());
-                (Self::Link(expression), caps)
-            }
-            Self::Send(argument, process) => {
-                let (process, mut caps) = process.fix_captures(loop_points, blocks);
-                let (argument, caps1) = argument.fix_captures(loop_points, blocks, &caps);
-                caps.extend(caps1);
-                (Self::Send(argument, process), caps)
-            }
-            Self::Receive(parameter, annotation, typ, process, vars) => {
-                let (process, mut caps) = process.fix_captures(loop_points, blocks);
-                caps.remove(parameter);
-                (
-                    Self::Receive(
-                        parameter.clone(),
-                        annotation.clone(),
-                        typ.clone(),
-                        process,
-                        vars.clone(),
-                    ),
-                    caps,
-                )
-            }
-            Self::Signal(chosen, process) => {
-                let (process, caps) = process.fix_captures(loop_points, blocks);
-                (Self::Signal(chosen.clone(), process), caps)
-            }
-            Self::Case(branches, processes, else_process) => {
-                let mut fixed_processes = Vec::new();
-                let mut caps = Captures::new();
-                for process in processes {
-                    let (process, caps1) = process.fix_captures(loop_points, blocks);
-                    fixed_processes.push(process);
-                    caps.extend(caps1);
-                }
-                let fixed_else = else_process.clone().map(|process| {
-                    let (process, caps1) = process.fix_captures(loop_points, blocks);
-                    caps.extend(caps1);
-                    process
-                });
-                (
-                    Self::Case(
-                        branches.clone(),
-                        fixed_processes.into_boxed_slice(),
-                        fixed_else,
-                    ),
-                    caps,
-                )
-            }
-            Self::Break => (Self::Break, Captures::new()),
-            Self::Continue(process) => {
-                let (process, caps) = process.fix_captures(loop_points, blocks);
-                (Self::Continue(process), caps)
-            }
-            Self::Begin {
-                unfounded,
-                label,
-                captures: _,
-                body: process,
-            } => {
-                let (_, mut loop_caps) = process.fix_captures(loop_points, blocks);
-                loop_caps.remove(subject);
-                let mut loop_points = loop_points.clone();
-                loop_points.insert(label.clone(), (subject.clone(), loop_caps.clone()));
-                let (process, caps) = process.fix_captures(&loop_points, blocks);
-                (
-                    Self::Begin {
-                        unfounded: unfounded.clone(),
-                        label: label.clone(),
-                        captures: loop_caps.clone(),
-                        body: process,
-                    },
-                    caps,
-                )
-            }
-            Self::Loop(label, _, _) => {
-                let (driver, loop_caps) = loop_points
-                    .get(label)
-                    .cloned()
-                    .unwrap_or((LocalName::invalid(), Captures::default()));
-                (
-                    Self::Loop(label.clone(), driver, loop_caps.clone()),
-                    loop_caps,
-                )
-            }
-            Self::SendType(argument, process) => {
-                let (process, caps) = process.fix_captures(loop_points, blocks);
-                (Self::SendType(argument.clone(), process), caps)
-            }
-            Self::ReceiveType(parameter, process) => {
-                let (process, caps) = process.fix_captures(loop_points, blocks);
-                (Self::ReceiveType(parameter.clone(), process), caps)
-            }
         }
     }
 }
@@ -606,95 +452,6 @@ impl Command<Type> {
 }
 
 impl Expression<()> {
-    pub fn fix_captures(
-        &self,
-        loop_points: &IndexMap<Option<LocalName>, (LocalName, Captures)>,
-        blocks: &IndexMap<usize, Captures>,
-        later_captures: &Captures,
-    ) -> (Arc<Self>, Captures) {
-        match self {
-            Self::Global(span, name, typ) => (
-                Arc::new(Self::Global(span.clone(), name.clone(), typ.clone())),
-                Captures::new(),
-            ),
-            Self::Variable(span, name, typ, _usage) => {
-                let usage = if later_captures.contains(name) {
-                    VariableUsage::Copy
-                } else {
-                    VariableUsage::Move
-                };
-                (
-                    Arc::new(Self::Variable(
-                        span.clone(),
-                        name.clone(),
-                        typ.clone(),
-                        usage,
-                    )),
-                    Captures::single(name.clone(), span.clone(), VariableUsage::Unknown),
-                )
-            }
-            Self::Box(span, _, expression, typ) => {
-                let (expression, mut caps) =
-                    expression.fix_captures(loop_points, blocks, later_captures);
-                for (name, (_span, usage)) in caps.names.iter_mut() {
-                    if later_captures.contains(name) {
-                        *usage = VariableUsage::Copy;
-                    } else {
-                        *usage = VariableUsage::Move;
-                    }
-                }
-                (
-                    Arc::new(Self::Box(
-                        span.clone(),
-                        caps.clone(),
-                        expression,
-                        typ.clone(),
-                    )),
-                    caps,
-                )
-            }
-            Self::Chan {
-                span,
-                chan_name: channel,
-                chan_annotation: annotation,
-                chan_type,
-                expr_type,
-                process,
-                ..
-            } => {
-                let (process, mut caps) = process.fix_captures(loop_points, blocks);
-                caps.remove(channel);
-                for (name, (_span, usage)) in caps.names.iter_mut() {
-                    if later_captures.contains(name) {
-                        *usage = VariableUsage::Copy;
-                    } else {
-                        *usage = VariableUsage::Move;
-                    }
-                }
-                (
-                    Arc::new(Self::Chan {
-                        span: span.clone(),
-                        captures: caps.clone(),
-                        chan_name: channel.clone(),
-                        chan_annotation: annotation.clone(),
-                        chan_type: chan_type.clone(),
-                        expr_type: expr_type.clone(),
-                        process,
-                    }),
-                    caps,
-                )
-            }
-            Self::Primitive(span, value, typ) => (
-                Arc::new(Self::Primitive(span.clone(), value.clone(), typ.clone())),
-                Captures::new(),
-            ),
-            Self::External(claimed_type, f, typ) => (
-                Arc::new(Self::External(claimed_type.clone(), *f, typ.clone())),
-                Captures::new(),
-            ),
-        }
-    }
-
     pub fn optimize(&self) -> Arc<Self> {
         match self {
             Self::Global(span, name, typ) => {
@@ -854,6 +611,23 @@ impl Process<()> {
                 typ: (),
                 command,
             } => command.qualify(module),
+            Self::Poll {
+                clients,
+                then,
+                else_,
+                ..
+            } => {
+                for client in clients {
+                    client.qualify(module);
+                }
+                then.qualify(module);
+                else_.qualify(module);
+            }
+            Self::Submit { values, .. } => {
+                for value in values {
+                    value.qualify(module);
+                }
+            }
             Self::Telltypes(_span, process) => process.qualify(module),
             Self::Block(_, _, body, process) => {
                 body.qualify(module);
@@ -941,14 +715,48 @@ impl<Typ> Process<Typ> {
             Process::Let {
                 name, value, then, ..
             } => {
-                let mut vars = value.free_variables();
-                vars.extend(then.free_variables());
+                let mut vars = then.free_variables();
                 vars.shift_remove(name);
+                vars.extend(value.free_variables());
                 vars
             }
             Process::Do { name, command, .. } => {
                 let mut vars = command.free_variables();
                 vars.insert(name.clone());
+                vars
+            }
+            Process::Poll {
+                driver,
+                clients,
+                name,
+                then,
+                else_,
+                ..
+            } => {
+                let mut vars = IndexSet::new();
+                for client in clients {
+                    vars.extend(client.free_variables());
+                }
+                let mut then_vars = then.free_variables();
+                then_vars.shift_remove(name);
+                then_vars.shift_remove(driver);
+                vars.extend(then_vars);
+                let mut else_vars = else_.free_variables();
+                else_vars.shift_remove(driver);
+                vars.extend(else_vars);
+                vars
+            }
+            Process::Submit {
+                driver,
+                values,
+                captures,
+                ..
+            } => {
+                let mut vars: IndexSet<LocalName> = captures.names.keys().cloned().collect();
+                vars.insert(driver.clone());
+                for value in values {
+                    vars.extend(value.free_variables());
+                }
                 vars
             }
             Process::Telltypes(_, process) => process.free_variables(),
@@ -977,6 +785,64 @@ impl<Typ> Process<Typ> {
             Self::Unreachable(_) => {
                 indentation(f, indent)?;
                 write!(f, "unreachable")
+            }
+
+            Self::Poll {
+                kind,
+                driver,
+                point,
+                clients,
+                name,
+                then,
+                else_,
+                ..
+            } => {
+                indentation(f, indent)?;
+                match kind {
+                    PollKind::Poll => write!(f, "poll")?,
+                    PollKind::Repoll => write!(f, "repoll")?,
+                }
+                write!(f, "[{} -> {}](", driver, point)?;
+                if let Some(first) = clients.first() {
+                    first.pretty(f, indent)?;
+                    for client in &clients[1..] {
+                        write!(f, ", ")?;
+                        client.pretty(f, indent)?;
+                    }
+                }
+                write!(f, ") {{")?;
+                indentation(f, indent + 1)?;
+                write!(f, "{} => {{", name)?;
+                then.pretty(f, indent + 2)?;
+                indentation(f, indent + 1)?;
+                write!(f, "}}")?;
+                indentation(f, indent + 1)?;
+                write!(f, "else => {{")?;
+                else_.pretty(f, indent + 2)?;
+                indentation(f, indent + 1)?;
+                write!(f, "}}")?;
+                indentation(f, indent)?;
+                write!(f, "}}")?;
+                Ok(())
+            }
+
+            Self::Submit {
+                driver,
+                point,
+                values,
+                ..
+            } => {
+                indentation(f, indent)?;
+                write!(f, "submit[{} -> {}](", driver, point)?;
+                if let Some(first) = values.first() {
+                    first.pretty(f, indent)?;
+                    for value in &values[1..] {
+                        write!(f, ", ")?;
+                        value.pretty(f, indent)?;
+                    }
+                }
+                write!(f, ")")?;
+                Ok(())
             }
 
             Self::Do {

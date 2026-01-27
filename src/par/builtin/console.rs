@@ -31,33 +31,33 @@ async fn console_open(mut handle: Handle) {
     loop {
         match handle.case().await.as_str() {
             "close" => {
-                handle.break_().await;
+                handle.break_();
                 break;
             }
 
             "print" => {
-                println!("{}", handle.receive().await.string().await.as_str(),);
+                println!("{}", handle.receive().string().await.as_str(),);
             }
 
             "prompt" => {
-                let prompt = handle.receive().await.string().await;
+                let prompt = handle.receive().string().await;
                 print!("{}", prompt.as_str());
                 let _ = stdout().flush();
                 let mut buf = String::new();
                 let result = stdin().read_line(&mut buf);
 
-                handle.send().await.concurrently(|mut handle| async move {
+                handle.send().concurrently(|mut handle| async move {
                     match result {
                         Ok(n) if n > 0 => {
                             let string = ParString::copy_from_slice(
                                 buf.trim_end_matches(&['\n', '\r']).as_bytes(),
                             );
-                            handle.signal(literal!("ok")).await;
-                            handle.provide_string(string).await;
+                            handle.signal(literal!("ok"));
+                            handle.provide_string(string);
                         }
                         _ => {
-                            handle.signal(literal!("err")).await;
-                            handle.break_().await;
+                            handle.signal(literal!("err"));
+                            handle.break_();
                         }
                     }
                 });

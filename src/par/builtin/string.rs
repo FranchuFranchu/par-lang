@@ -36,12 +36,10 @@ pub fn external_module() -> Module<Arc<process::Expression<()>>> {
             ),
             Definition::external(
                 "ParserFromReader",
-                Type::forall(
-                    "e",
-                    Type::function(
-                        Type::name(Some("Bytes"), "Reader", vec![Type::var("e")]),
-                        Type::name(None, "Parser", vec![Type::var("e")]),
-                    ),
+                Type::generic_function(
+                    vec!["e"],
+                    Type::name(Some("Bytes"), "Reader", vec![Type::var("e")]),
+                    Type::name(None, "Parser", vec![Type::var("e")]),
                 ),
                 |handle| Box::pin(string_parser_from_reader(handle)),
             ),
@@ -83,10 +81,10 @@ async fn string_builder(mut handle: Handle) {
     loop {
         match handle.case().await.as_str() {
             "add" => {
-                buf += handle.receive().await.string().await.as_str();
+                buf += handle.receive().string().await.as_str();
             }
             "build" => {
-                handle.provide_string(ParString::from(buf)).await;
+                handle.provide_string(ParString::from(buf));
                 break;
             }
             _ => unreachable!(),
@@ -95,51 +93,47 @@ async fn string_builder(mut handle: Handle) {
 }
 
 async fn string_quote(mut handle: Handle) {
-    let s = handle.receive().await.string().await;
-    handle
-        .provide_string(ParString::from(format!("{:?}", s)))
-        .await;
+    let s = handle.receive().string().await;
+    handle.provide_string(ParString::from(format!("{:?}", s)));
 }
 
 async fn string_parser(mut handle: Handle) {
-    let remainder = handle.receive().await.string().await;
+    let remainder = handle.receive().string().await;
     provide_string_parser(handle, remainder).await;
 }
 
 async fn string_parser_from_reader(mut handle: Handle) {
-    let reader = handle.receive().await;
+    let reader = handle.receive();
     provide_string_parser(handle, ReaderRemainder::new(reader)).await;
 }
 
 async fn string_from_bytes(mut handle: Handle) {
-    let bytes = handle.receive().await.bytes().await;
-    handle
-        .provide_string(ParString::copy_from_slice(
-            String::from_utf8_lossy(&bytes).as_bytes(),
-        ))
-        .await;
+    let bytes = handle.receive().bytes().await;
+    handle.provide_string(ParString::copy_from_slice(
+        String::from_utf8_lossy(&bytes).as_bytes(),
+    ));
 }
 
 async fn string_equals(mut handle: Handle) {
-    let left = handle.receive().await.string().await;
-    let right = handle.receive().await.string().await;
+    let left = handle.receive().string().await;
+    let right = handle.receive().string().await;
     if left == right {
-        handle.signal(literal!("true")).await;
+        handle.signal(literal!("true"));
     } else {
-        handle.signal(literal!("false")).await;
+        handle.signal(literal!("false"));
     }
-    handle.break_().await;
+    handle.break_();
 }
 
 async fn string_compare(mut handle: Handle) {
-    let left = handle.receive().await.string().await;
-    let right = handle.receive().await.string().await;
+    let left = handle.receive().string().await;
+    let right = handle.receive().string().await;
     match left.cmp(&right) {
-        Ordering::Equal => handle.signal(literal!("equal")).await,
-        Ordering::Greater => handle.signal(literal!("greater")).await,
-        Ordering::Less => handle.signal(literal!("less")).await,
+        Ordering::Equal => handle.signal(literal!("equal")),
+        Ordering::Greater => handle.signal(literal!("greater")),
+        Ordering::Less => handle.signal(literal!("less")),
     }
-    handle.break_().await;
+    handle.break_();
 }
 
 #[derive(Debug, Clone)]
@@ -184,7 +178,7 @@ impl StringPattern {
             }
             "empty" => {
                 // .empty!
-                handle.break_().await;
+                handle.break_();
                 Box::new(Self::Empty)
             }
             "min" => {

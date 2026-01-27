@@ -17,8 +17,8 @@ pub fn external_module() -> Module<Arc<process::Expression<()>>> {
             Type::forall("a", Type::function(Type::var("a"), Type::var("a"))),
             |mut handle| {
                 async move {
-                    let x = handle.receive().await;
-                    handle.link(x).await;
+                    let x = handle.receive();
+                    handle.link(x);
                 }
                 .boxed()
             },
