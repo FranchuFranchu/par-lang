@@ -208,6 +208,7 @@ impl Arena {
     pub fn alloc<T: Indexable>(&mut self, data: T) -> Index<T> {
         T::alloc(self, data, false)
     }
+    /// Guarantees that the allocated value will not be interned
     pub fn alloc_in_new<T: Indexable>(&mut self, data: T) -> Index<T> {
         T::alloc(self, data, true)
     }

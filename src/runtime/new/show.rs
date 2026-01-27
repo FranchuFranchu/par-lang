@@ -118,12 +118,15 @@ impl<'a, 'b, A: ArenaLike> std::fmt::Display for Showable<'a, 'b, &'a Global, A>
             Global::Variable(id) => {
                 write!(f, "{}", id)?;
             }
+            Global::Indirect(p) => {
+                write!(f, "{}", Showable(self.1.arena.get(*p), self.1))?;
+            }
             Global::Package(index, captures, _) => {
                 write!(f, "@{}${}", index.0, Showable(captures, self.1))?;
             }
             Global::Fanout(index) => {
                 write!(f, "{{")?;
-                for i in self.1.arena.get(index.clone()) {
+                for i in self.1.arena.get(*index) {
                     write!(f, "{} ", Showable(i, self.1))?;
                 }
                 write!(f, "}}")?;

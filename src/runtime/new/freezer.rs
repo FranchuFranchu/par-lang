@@ -1,6 +1,11 @@
 //! The freezer implements a Node -> Global function (roughly)
 //! This is used by the compiler to add pre-reduced nets to the arena
 
+use std::{
+    collections::{BTreeMap, HashMap},
+    sync::Arc,
+};
+
 use indexmap::IndexMap;
 
 use crate::runtime::{
@@ -19,6 +24,7 @@ pub struct Freezer<'a> {
     pub write: &'a mut Arena,
     pub num_vars: usize,
     pub offset: ArenaTrim,
+    pub share_hole_destinations: HashMap<usize, (Option<Index<Global>>, Vec<usize>, Vec<Global>)>,
 }
 
 impl<'a> Freezer<'a> {
@@ -28,6 +34,7 @@ impl<'a> Freezer<'a> {
             variable_map: IndexMap::new(),
             num_vars: 0,
             offset: read.permanent.slots_end_indices(),
+            share_hole_destinations: Default::default(),
         }
     }
     fn intern(&mut self, read: &TripleArena, s: &str) -> Index<str> {
@@ -55,7 +62,16 @@ impl<'a> Freezer<'a> {
     }
     fn freeze_shared(&mut self, read: &TripleArena, node: &Shared) -> Global {
         match node {
-            Shared::Async(mutex) => todo!(),
+            Shared::Async(mutex) => {
+                let res = self.num_vars;
+                self.num_vars += 1;
+                self.share_hole_destinations
+                    .entry(Arc::as_ptr(mutex).addr())
+                    .or_insert_with(|| (None, vec![], vec![]))
+                    .1
+                    .push(res);
+                Global::Variable(res)
+            }
             Shared::Sync(sync_shared) => match &**sync_shared {
                 SyncShared::Package(index, captures) => {
                     let package = self.maybe_freeze_package(read, index);
@@ -89,14 +105,24 @@ impl<'a> Freezer<'a> {
             ),
             Linear::Request(_) => panic!("attempted to freeze `Linear::Request`"),
             Linear::ShareHole(mutex) => {
-                todo!(); // we still have to add them from the Shared side.
+                let empty_index = self.write.alloc_clone::<[Global]>(&[]);
                 let mut lock = mutex.lock().unwrap();
-                let SharedHole::Unfilled(codes) = &mut *lock else {
+                let SharedHole::Unfilled(destinations) = &mut *lock else {
                     unreachable!()
                 };
-                let codes: Vec<_> = codes.iter().map(|x| self.freeze_node(read, x)).collect();
-                let codes = self.write.alloc_clone(codes.as_ref());
-                Global::Fanout(codes)
+                let mut destinations: Vec<_> = destinations
+                    .iter()
+                    .map(|x| self.freeze_node(read, x))
+                    .collect();
+
+                let entry = self
+                    .share_hole_destinations
+                    .entry(Arc::as_ptr(mutex).addr())
+                    .or_insert_with(|| (None, vec![], vec![]));
+                entry.2.append(&mut destinations);
+                let addr = self.write.alloc_in_new(Global::Fanout(empty_index));
+                entry.0 = Some(addr);
+                Global::Indirect(addr)
             }
         }
     }
@@ -199,6 +225,7 @@ impl<'a> Freezer<'a> {
                 let globs = self.write.alloc_clone(globs.as_ref());
                 Global::Fanout(globs)
             }
+            Global::Indirect(index) => self.freeze_global(read, instance, read.get(*index)),
         };
         global
     }
@@ -282,7 +309,20 @@ impl<'a> Freezer<'a> {
             package.clone()
         }
     }
-    pub fn verify(&mut self) {
+}
+
+impl<'a> Drop for Freezer<'a> {
+    fn drop(&mut self) {
+        for (_, (index, dest_variables, mut dest_globals)) in
+            core::mem::take(&mut self.share_hole_destinations).into_iter()
+        {
+            let index = index.unwrap();
+            dest_variables
+                .iter()
+                .for_each(|k| dest_globals.push(Global::Variable(*k)));
+            *self.write.get_mut(index) =
+                Global::Fanout(self.write.alloc_clone(dest_globals.as_ref()));
+        }
         if !self.variable_map.iter().all(|x| x.1 .1 == true) {
             for i in self.variable_map.iter().filter(|x| x.1 .1 == false) {
                 eprintln!(

@@ -810,13 +810,14 @@ impl Compiler {
             })
             .collect();
         let redexes = freezer.write.alloc_clone(redexes.as_ref());
-        freezer.verify();
+        let num_vars = freezer.num_vars;
+        drop(freezer);
         // readback root, captures, and redexes into the arena
         // (now that it's pre-reduced)
         //
         // create a new package
         let package = Package {
-            num_vars: freezer.num_vars,
+            num_vars,
             body: PackageBody {
                 root,
                 captures,

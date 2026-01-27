@@ -177,6 +177,7 @@ pub struct Package {
 }
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Global {
+    Indirect(GlobalPtr),
     Variable(usize),
     Package(PackagePtr, GlobalPtr, FanBehavior),
     /// Destruct attempts to convert the interacting node into a value,
@@ -556,6 +557,7 @@ impl<A: ArenaLike> Runtime<A> {
         stacker::maybe_grow(32 * 1024, 1024 * 1024, move || match node {
             Node::Shared(shared) => Some(shared),
             Node::Global(instance, global_index) => match self.arena().get(global_index) {
+                Global::Indirect(index) => self.share_inner(Node::Global(instance, *index)),
                 Global::Destruct(..) => None,
                 Global::Fanout(..) => None,
                 Global::Package(package, captures, FanBehavior::Expand) => {
@@ -726,6 +728,12 @@ impl<A: ArenaLike> Runtime<A> {
                     Node::Global(instance, *captures_in),
                     other.into_node(),
                 );
+            }
+            sym!(
+                NodeRef::Global(instance, _, Global::Indirect(address)),
+                other
+            ) => {
+                self.link(Node::Global(instance, *address), other.into_node());
             }
             sym!(NodeRef::Global(instance, _, Global::Variable(index)), value) => {
                 self.set_var(instance, *index, value.into_node())
@@ -917,6 +925,7 @@ impl SyncShared {
 impl Global {
     pub fn variant_name(&self) -> String {
         match self {
+            Global::Indirect(_) => "Indirect".into(),
             Global::Variable(_) => "Variable".into(),
 
             Global::Package(_, _, _) => "Package".into(),
