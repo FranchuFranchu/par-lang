@@ -7,23 +7,21 @@ use super::readback::Handle;
 use super::reducer::NetHandle;
 use crate::par::types::{visit, Type, TypeDefs, TypeError};
 
+use super::arena::{Arena, Index};
+use super::reducer::Reducer;
+use super::runtime::{ExternalArc, GlobalCont, GlobalValue, Package, PackageBody, PackagePtr};
 use crate::par::language::GlobalName;
-use crate::runtime::new::arena::{Arena, Index};
-use crate::runtime::new::reducer::Reducer;
-use crate::runtime::new::runtime::{
-    ExternalArc, GlobalCont, GlobalValue, Package, PackageBody, PackagePtr,
-};
-use crate::runtime::{new, old};
+use crate::runtime::{flat, tree};
 use arcstr::ArcStr;
 use indexmap::IndexMap;
-use old::compiler::IcCompiled;
+use tree::compiler::IcCompiled;
 
-use crate::runtime::old::Net;
-use new::runtime::Global;
+use flat::runtime::Global;
+use tree::net::Net;
 
 #[derive(Default)]
 pub struct NetTranspiler {
-    source: old::net::Net,
+    source: Net,
     num_vars: usize,
     variable_map: HashMap<usize, usize>,
 }
@@ -86,7 +84,7 @@ impl Transpiled {
         module: &crate::par::program::CheckedModule,
     ) -> Result<Self, crate::runtime::RuntimeCompilerError> {
         let type_defs = module.type_defs.clone();
-        let ic_compiled = crate::runtime::old::compiler::IcCompiled::compile_file(module)?;
+        let ic_compiled = tree::compiler::IcCompiled::compile_file(module)?;
         let transpiled = Self::transpile(ic_compiled, type_defs);
         Ok(transpiled)
     }
@@ -124,7 +122,7 @@ impl NetTranspiler {
 }
 
 impl ProgramTranspiler {
-    fn transpile_tree_and_alloc(&mut self, source: old::net::Tree) -> Index<Global> {
+    fn transpile_tree_and_alloc(&mut self, source: tree::net::Tree) -> Index<Global> {
         let tree = self.transpile_tree(source);
         self.dest.alloc(tree)
     }
@@ -213,8 +211,8 @@ impl ProgramTranspiler {
         let net = self.id_to_package.get(&id).unwrap().clone();
         self.transpile_definition_package(id, net)
     }
-    fn transpile_tree(&mut self, source: old::net::Tree) -> Global {
-        use old::net::Tree;
+    fn transpile_tree(&mut self, source: tree::net::Tree) -> Global {
+        use tree::net::Tree;
         match source {
             Tree::Var(id) => match self.current_net_mut().source.variables.remove_linked(id) {
                 Ok(contents) => self.transpile_tree(contents),

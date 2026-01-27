@@ -20,16 +20,16 @@ use crate::{
 
 use super::{compiler::TypedTree, net::Tree, Net};
 pub(crate) mod private {
+    use super::super::net::ReducerMessage;
+    use super::super::readback::Handle;
     use super::super::{net::Tree, Net};
-    use crate::runtime::old::net::ReducerMessage;
-    use crate::runtime::old::readback::Handle;
     use futures::channel::mpsc;
     use std::sync::atomic::AtomicUsize;
     use std::sync::{Arc, LockResult, Mutex};
 
     pub struct NetWrapper {
         net: Arc<Mutex<Net>>,
-        notify: mpsc::UnboundedSender<crate::runtime::old::net::ReducerMessage>,
+        notify: mpsc::UnboundedSender<super::super::net::ReducerMessage>,
         handle_count: Arc<AtomicUsize>,
     }
 
@@ -94,7 +94,7 @@ pub(crate) mod private {
     }
 }
 
-use crate::runtime::old::net::ReducerMessage;
+use crate::runtime::tree::net::ReducerMessage;
 use private::NetWrapper;
 
 pub struct Handle {
@@ -869,7 +869,7 @@ mod tests {
     use super::*;
     use crate::location::Span;
     use crate::par::types::Type;
-    use crate::runtime::old::compiler::TypedTree;
+    use crate::runtime::tree::compiler::TypedTree;
     use std::sync::atomic::AtomicUsize;
 
     #[test]

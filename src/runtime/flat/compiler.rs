@@ -16,21 +16,19 @@ use crate::{
         program::{CheckedModule, Definition},
         types::{visit, Type, TypeDefs, TypeError},
     },
-    runtime::{
-        new::{
-            arena::{Arena, Index, Indexable, TripleArena},
-            freezer::Freezer,
-            readback::Handle,
-            reducer::{NetHandle, Reducer},
-            runtime::{
-                Global, GlobalCont, Instance, Linker, Node, Package, PackageBody, PackagePtr,
-                Runtime, Value,
-            },
-        },
-        old::net::FanBehavior,
-    },
+    runtime::FanBehavior,
 };
 
+use super::{
+    arena::{Arena, Index, Indexable, TripleArena},
+    freezer::Freezer,
+    readback::Handle,
+    reducer::{NetHandle, Reducer},
+    runtime::{
+        Global, GlobalCont, Instance, Linker, Node, Package, PackageBody, PackagePtr, Runtime,
+        Value,
+    },
+};
 pub type Result<T> = core::result::Result<T, String>;
 macro_rules! err {
     ($($arg:tt)*) => {
@@ -393,11 +391,7 @@ impl Compiler {
             .clone();
 
         let captures = self.alloc(Global::Value(Value::Break));
-        let global = Global::Package(
-            package,
-            captures,
-            crate::runtime::old::net::FanBehavior::Expand,
-        );
+        let global = Global::Package(package, captures, FanBehavior::Expand);
         global
     }
     fn compile_command(

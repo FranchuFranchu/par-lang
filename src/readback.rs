@@ -3,7 +3,7 @@ use crate::{
         parse::parse_bytes,
         primitive::{ParString, Primitive},
     },
-    runtime::old::{net::Net, readback::TypedHandle, readback::TypedReadback},
+    runtime::tree::{net::Net, readback::TypedHandle, readback::TypedReadback},
 };
 use arcstr::ArcStr;
 use bytes::Bytes;

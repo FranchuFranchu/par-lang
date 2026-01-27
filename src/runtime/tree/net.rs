@@ -17,6 +17,8 @@ use futures::StreamExt;
 use indexmap::IndexMap;
 use num_bigint::BigInt;
 
+use crate::runtime::FanBehavior;
+
 use crate::par::primitive::{ParString, Primitive};
 
 use super::readback::{private::NetWrapper, Handle};
@@ -33,18 +35,6 @@ pub fn number_to_string(mut number: usize) -> String {
         number = (number - 1) / 26;
     }
     result
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-/// The behavior of a `Package` node when it interacts
-/// with a fan node (duplicate or erase)
-pub enum FanBehavior {
-    /// Expand the package and then duplicate/erase it
-    /// Used for side-effectful and top level packages
-    Expand,
-    /// Propagate the fan operator through the captures
-    /// Used in boxes.
-    Propagate,
 }
 
 /// A `Tree` corresponds to a port that is the root of a tree of interaction combinators.

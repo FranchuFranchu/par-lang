@@ -1,23 +1,18 @@
 //! The freezer implements a Node -> Global function (roughly)
 //! This is used by the compiler to add pre-reduced nets to the arena
 
-use std::{
-    collections::{BTreeMap, HashMap},
-    sync::Arc,
-};
+use std::{collections::HashMap, sync::Arc};
 
 use indexmap::IndexMap;
 
-use crate::runtime::{
-    new::{
-        arena::{Arena, ArenaTrim, Index, TripleArena, HIGHER_HALF},
-        runtime::{
-            Global, GlobalCont, Instance, Linear, Node, Package, PackageBody, PackagePtr, Shared,
-            SharedHole, SyncShared, Value,
-        },
+use super::{
+    arena::{Arena, ArenaTrim, Index, TripleArena, HIGHER_HALF},
+    runtime::{
+        Global, GlobalCont, Instance, Linear, Node, Package, PackageBody, PackagePtr, Shared,
+        SharedHole, SyncShared, Value,
     },
-    old::net::FanBehavior,
 };
+use crate::runtime::FanBehavior;
 
 pub struct Freezer<'a> {
     variable_map: IndexMap<(usize, usize), (usize, bool)>,

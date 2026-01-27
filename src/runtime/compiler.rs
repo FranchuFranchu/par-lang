@@ -3,9 +3,9 @@ use futures::{future::RemoteHandle, task::SpawnExt};
 use crate::{
     par::{language::GlobalName, types::Type},
     runtime::{
-        new::{self, compiler::Compiled as V3Compiled},
-        old::{self, compiler::IcCompiled},
+        flat::{self, compiler::Compiled as V3Compiled},
         readback::Handle,
+        tree::{self, compiler::IcCompiled},
     },
     spawn::TokioSpawn,
 };
@@ -97,8 +97,8 @@ impl Compiled {
 }
 
 pub enum RunResult {
-    Old(old::net::Rewrites),
-    New(new::stats::Rewrites),
+    Old(tree::net::Rewrites),
+    New(flat::stats::Rewrites),
 }
 
 impl RunResult {

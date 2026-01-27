@@ -6,8 +6,8 @@ use num_bigint::BigInt;
 use std::future::Future;
 
 pub enum Handle {
-    Old(super::old::readback::Handle),
-    New(super::new::readback::Handle),
+    Old(super::tree::readback::Handle),
+    New(super::flat::readback::Handle),
 }
 
 pub async fn misc_debug_tasks() {

@@ -1,7 +1,7 @@
 use super::readback::Handle;
-use crate::runtime::new::arena::Arena;
-use crate::runtime::new::runtime::{Linear, Node, Runtime, UserData};
-use crate::runtime::new::stats::Rewrites;
+use super::arena::Arena;
+use super::runtime::{Linear, Node, Runtime, UserData};
+use super::stats::Rewrites;
 use crate::TokioSpawn;
 use futures::future::RemoteHandle;
 use futures::task::{FutureObj, Spawn, SpawnExt};

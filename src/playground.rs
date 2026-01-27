@@ -15,7 +15,7 @@ use crate::par::build_result::BuildResult;
 use crate::par::{language::GlobalName, types::Type};
 use crate::{
     location::FileName, par::program::CheckedModule, readback::Element,
-    runtime::old::compiler::IcCompiled, runtime::old::readback::TypedHandle, spawn::TokioSpawn,
+    runtime::tree::compiler::IcCompiled, runtime::tree::readback::TypedHandle, spawn::TokioSpawn,
 };
 use core::time::Duration;
 use std::collections::HashMap;

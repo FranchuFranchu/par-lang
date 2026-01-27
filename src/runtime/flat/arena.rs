@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::fmt::{Debug, Display};
 use std::hash::Hash;
 
-use crate::runtime::new::{
+use super::{
     runtime::PackageBody,
     show::{Showable, Shower},
 };
