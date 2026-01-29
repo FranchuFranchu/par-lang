@@ -1,7 +1,8 @@
 use super::arena::Arena;
 use super::reducer::{NetHandle, ReducerMessage};
 use super::runtime::Linker;
-use super::runtime::{ExternalFn, Global, GlobalCont, Linear, Node, PackagePtr, Value};
+use super::runtime::{Global, GlobalCont, Linear, Node, PackagePtr, Value};
+use crate::par::external::ExternalFn;
 use crate::par::primitive::Primitive;
 use arcstr::ArcStr;
 use futures::task::FutureObj;

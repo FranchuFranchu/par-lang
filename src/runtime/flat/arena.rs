@@ -293,8 +293,8 @@ pub trait Indexable {
     fn alloc<'s>(store: &'s mut Arena, data: Self, force_new: bool) -> Index<Self>
     where
         Self: Sized;
-    fn alloc_clone<'s>(_: &'s mut Arena, _: &Self, force_new: bool) -> Index<Self> {
-        todo!() //Self::alloc(data.clone())
+    fn alloc_clone<'s>(_: &'s mut Arena, _: &Self, _: bool) -> Index<Self> {
+        unimplemented!("alloc_clone is not implemented for this type")
     }
     fn shift(index: &mut Index<Self>, offset: usize);
     fn is_higher_half(index: &Index<Self>) -> bool;
@@ -311,7 +311,7 @@ macro_rules! slice_indexable {
             fn get_mut<'s>(store: &'s mut Arena, index: Index<Self>) -> &'s mut Self {
                 store.$field.get_slice_mut(index.0 .0, index.0 .1)
             }
-            fn alloc_clone<'s>(store: &'s mut Arena, data: &Self, force_new: bool) -> Index<Self> {
+            fn alloc_clone<'s>(store: &'s mut Arena, data: &Self, _: bool) -> Index<Self> {
                 Index(store.$field.alloc_slice(data))
             }
             fn contains<'s>(store: &'s Arena, index: Index<Self>) -> bool {
@@ -402,7 +402,7 @@ impl Indexable for str {
         &mut store.strings
             [index.0 .0 - store.strings_start..index.0 .0 + index.0 .1 - store.strings_start]
     }
-    fn alloc_clone<'s>(store: &'s mut Arena, data: &Self, force_new: bool) -> Index<Self> {
+    fn alloc_clone<'s>(store: &'s mut Arena, data: &Self, _: bool) -> Index<Self> {
         let start = store.strings.len() + store.strings_start;
         store.strings.push_str(data);
         Index((start, data.len()))

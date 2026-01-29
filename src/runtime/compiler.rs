@@ -9,7 +9,6 @@ use crate::{
     },
     runtime::{
         flat::{
-            self,
             compiler::{Compiled as V3Compiled, Var},
             stats::Rewrites,
         },

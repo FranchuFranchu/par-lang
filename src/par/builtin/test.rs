@@ -1,6 +1,6 @@
 use futures::{future::BoxFuture, FutureExt};
 
-use crate::runtime::flat::runtime::ExternalFnRet;
+use crate::par::external::ExternalFnRet;
 use std::sync::{mpsc, Arc};
 
 use crate::{

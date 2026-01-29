@@ -5,13 +5,13 @@ use indexmap::IndexMap;
 
 use crate::{
     location::{FileName, Point, Span, Spanning},
-    par::{language::Passes, parse::parse_module},
     runtime::Handle,
 };
 
 use super::{
-    language::{CompileError, GlobalName, LocalName},
-    parse::SyntaxError,
+    external::ExternalFn,
+    language::{CompileError, GlobalName, LocalName, Passes},
+    parse::{parse_module, SyntaxError},
     process::{self, NameWithType},
     types::{Context, Type, TypeDefs, TypeError},
 };
@@ -73,12 +73,16 @@ impl Definition<Arc<process::Expression<()>>> {
     pub fn external(
         name: &'static str,
         typ: Type,
-        f: fn(Handle) -> Pin<Box<dyn Send + Future<Output = ()>>>,
+        function: fn(Handle) -> Pin<Box<dyn Send + Future<Output = ()>>>,
     ) -> Self {
         Self {
             span: Default::default(),
             name: GlobalName::external(None, name),
-            expression: Arc::new(process::Expression::External(typ, f, ())),
+            expression: Arc::new(process::Expression::External(
+                typ,
+                ExternalFn { name, function },
+                (),
+            )),
         }
     }
 }

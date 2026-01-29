@@ -3,6 +3,7 @@ pub use compiler::Compiled;
 pub use readback::Handle;
 
 pub mod compiler;
+pub mod poll;
 pub mod readback;
 
 pub use compiler::RuntimeCompilerError;

@@ -92,7 +92,7 @@ impl Reducer {
                                     self.net_handle(),
                                     other,
                                 );
-                                self.spawner.spawn(f(handle.into())).unwrap();
+                                self.spawner.spawn((f.function)(handle.into())).unwrap();
                             }
                             (UserData::ExternalArc(f), other) => {
                                 let handle = Handle::from_node(

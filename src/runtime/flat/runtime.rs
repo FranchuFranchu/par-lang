@@ -31,6 +31,7 @@ use std::fmt::Debug;
 use std::hash::Hash;
 
 use super::show::{Showable, Shower};
+use crate::par::external::{ExternalFn, ExternalFnRet};
 use crate::par::primitive::Primitive;
 
 use super::arena::*;
@@ -114,9 +115,6 @@ pub enum UserData {
     Request(oneshot::Sender<Node>),
 }
 
-pub type ExternalFnRet = std::pin::Pin<Box<dyn Send + std::future::Future<Output = ()>>>;
-pub type ExternalFn = fn(crate::runtime::Handle) -> ExternalFnRet;
-
 #[derive(Clone)]
 pub struct ExternalArc(pub Arc<dyn Send + Sync + Fn(crate::runtime::Handle) -> ExternalFnRet>);
 
@@ -187,7 +185,7 @@ pub enum FanBehavior {
     Propagate,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Global {
     Indirect(GlobalPtr),
     Variable(usize),
@@ -232,7 +230,7 @@ pub enum Shared {
 /// P is the type of children. Usually, this will be `GlobalPtr`, `Shared`, or `Node`
 ///
 /// There are [`Linear`] values, [`Shared`] values, and [`Global`] values.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Value<P> {
     /// The break node; created in break commands (`value!`)
     Break,
@@ -311,7 +309,7 @@ impl From<UserData> for Linear {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 /// A "global continuation"; a negative node stored in the global array
 /// When it interacts with a value, it attempts to destructure it.
 pub enum GlobalCont {

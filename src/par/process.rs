@@ -6,7 +6,7 @@ use super::{
 };
 use crate::{
     location::{Span, Spanning},
-    par::program::CheckedModule,
+    par::{external::ExternalFn, program::CheckedModule},
     runtime::Handle,
 };
 use indexmap::IndexSet;
@@ -110,11 +110,7 @@ pub enum Expression<Typ> {
         process: Arc<Process<Typ>>,
     },
     Primitive(Span, Primitive, Typ),
-    External(
-        Type,
-        fn(Handle) -> Pin<Box<dyn Send + Future<Output = ()>>>,
-        Typ,
-    ),
+    External(Type, ExternalFn, Typ),
 }
 
 impl<Typ> Spanning for Process<Typ> {
@@ -490,7 +486,7 @@ impl Expression<()> {
                 Arc::new(Self::Primitive(span.clone(), value.clone(), typ.clone()))
             }
             Self::External(claimed_type, f, typ) => {
-                Arc::new(Self::External(claimed_type.clone(), *f, typ.clone()))
+                Arc::new(Self::External(claimed_type.clone(), f.clone(), typ.clone()))
             }
         }
     }
