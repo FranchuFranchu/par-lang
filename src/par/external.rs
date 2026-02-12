@@ -8,7 +8,7 @@ pub struct ExternalFn {
 
 impl PartialEq for ExternalFn {
     fn eq(&self, other: &Self) -> bool {
-        self.function == other.function
+        std::ptr::fn_addr_eq(self.function, other.function)
     }
 }
 

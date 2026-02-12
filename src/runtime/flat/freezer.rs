@@ -137,7 +137,7 @@ impl<'a> Freezer<'a> {
                     let id = self
                         .variable_map
                         .entry((addr, *id))
-                        .and_modify(|(id, visited)| *visited = true)
+                        .and_modify(|(_, visited)| *visited = true)
                         .or_insert_with(|| {
                             let res = self.num_vars;
                             self.num_vars += 1;

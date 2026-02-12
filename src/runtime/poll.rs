@@ -1,9 +1,8 @@
 use arcstr::ArcStr;
 
 use super::readback::Handle;
-use crate::runtime::flat::runtime::Linker;
 
-async fn poll_token_server(mut handle: Handle) {
+pub(crate) async fn poll_token_server(mut handle: Handle) {
     use futures::future::BoxFuture;
     use futures::stream::FuturesUnordered;
     use futures::stream::StreamExt as _;

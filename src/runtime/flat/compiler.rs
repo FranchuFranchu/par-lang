@@ -6,16 +6,19 @@
 
 use std::{collections::HashMap, fmt::Display, sync::Arc};
 
+use arcstr::ArcStr;
 use indexmap::IndexMap;
 
 use crate::{
     location::Span,
     par::{
+        external::ExternalFnRet,
         language::{GlobalName, LocalName},
-        process::{Captures, Command, Expression, Process, VariableUsage},
+        process::{Captures, Command, Expression, PollKind, Process, VariableUsage},
         program::{CheckedModule, Definition},
         types::{visit, Type, TypeDefs, TypeError},
     },
+    runtime::poll::poll_token_server,
 };
 
 use super::{
@@ -48,6 +51,7 @@ macro_rules! tdb {
 pub enum Var {
     Name(LocalName),
     Loop(Option<LocalName>),
+    Poll(LocalName),
 }
 
 #[derive(Clone, Debug)]
@@ -119,11 +123,22 @@ impl Display for Context {
             match k {
                 Var::Loop(None) => write!(f, "@ = {v:?}"),
                 Var::Loop(Some(k)) => write!(f, "@{k} = {v:?}"),
+                Var::Poll(k) => write!(f, "@{k} = {v:?}"),
                 Var::Name(k) => write!(f, "{k} = {v:?}"),
             }?;
         }
         Ok(())
     }
+}
+
+fn poll_token_tree() -> Global {
+    fn poll_token(handle: crate::runtime::Handle) -> ExternalFnRet {
+        Box::pin(poll_token_server(handle))
+    }
+    Global::Value(Value::ExternalFn(crate::par::external::ExternalFn {
+        name: "#Poll",
+        function: poll_token,
+    }))
 }
 
 impl PackageState {
@@ -297,6 +312,20 @@ impl PackageState {
             Ok(ret)
         }
     }
+
+    pub fn build_submit_stream(&mut self, items: Vec<Global>) -> Global {
+        let break_ = self.arena.alloc(Global::Value(Value::Break));
+        items.into_iter().rfold(
+            Global::Value(Value::Either(self.arena.alloc_clone("#end"), break_)),
+            |acc, i| {
+                let acc = self.arena.alloc(acc);
+                let i = self.arena.alloc(i);
+                let pair = self.arena.alloc(Global::Value(Value::Pair(acc, i)));
+                Global::Value(Value::Either(self.arena.alloc_clone("#item"), pair))
+            },
+        )
+    }
+
     fn show(&self) {
         let mut s = String::new();
         for (a, b) in self.redexes.iter() {
@@ -527,23 +556,12 @@ impl Compiler {
                 captures,
                 body,
             } => {
-                tdb!(self.current().tab_level, "{}.begin@{:?}", subject, label);
                 self.enter();
                 let driver = self
                     .current()
                     .get_var(&Var::Name(subject.clone()), &VariableUsage::Move)?;
-                tdb!(
-                    self.current().tab_level,
-                    "got the driver; it's {:?}",
-                    driver
-                );
                 let loop_var = self.current().define_var(Var::Loop(label.clone()));
 
-                tdb!(
-                    self.current().tab_level,
-                    "defined the loop variable; it's {:?}",
-                    loop_var
-                );
                 let package_place = self.write_arena().alloc_in_new(None);
                 let context = self.current().capture(&captures)?;
                 let (captures, pack) = self.current().pack(context);
@@ -551,7 +569,6 @@ impl Compiler {
                     .loop_points
                     .insert(label.clone(), pack.clone());
 
-                tdb!(self.current().tab_level, "compiling subprocess...",);
                 self.push_current(0);
                 let (captures_inner, cx) = self.current().new_var();
                 self.current().unpack_self(cx, &pack);
@@ -590,10 +607,8 @@ impl Compiler {
                     FanBehavior::Propagate,
                 );
 
-                tdb!(self.current().tab_level, "linking loop var to package",);
                 self.current().link(loop_var, package_global_2);
 
-                tdb!(self.current().tab_level, "linking begin body to package",);
                 self.current()
                     .link(package_global, Global::Value(Value::Pair(captures, driver)));
                 self.current().close_all_vars();
@@ -680,6 +695,48 @@ impl Compiler {
                     .clone();
                 self.compile_process(span, &body)?;
             }
+            Process::Poll {
+                span,
+                kind,
+                driver,
+                point,
+                clients,
+                name,
+                name_typ,
+                captures,
+                then,
+                else_,
+            } => {
+                let poll_var = Var::Poll(driver.clone());
+                if matches!(kind, PollKind::Poll) {
+                    self.current()
+                        .define_var_known(poll_var.clone(), poll_token_tree());
+                }
+
+                if !clients.is_empty() {
+                    let clients: Result<Vec<_>> = clients
+                        .into_iter()
+                        .map(|client| self.compile_expression(span, client))
+                        .collect();
+                    let stream = self.current().build_submit_stream(clients?);
+                    let (next0, next1) = self.current().new_var();
+                    let payload = Global::Value(Value::Pair(self.alloc(next0), self.alloc(stream)));
+                    let request = Global::Value(Value::Either(
+                        self.alloc_clone("#submit"),
+                        self.alloc(payload),
+                    ));
+                    let token = self.current().get_var(&poll_var, &VariableUsage::Move)?;
+                    self.current().link(token, request);
+                    self.current().define_var_known(poll_var.clone(), next1);
+                }
+            }
+            Process::Submit {
+                span,
+                driver,
+                point,
+                values,
+                captures,
+            } => {}
             Process::Unreachable(span) => todo!(),
             _ => todo!(),
         };
