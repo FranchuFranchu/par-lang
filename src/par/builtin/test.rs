@@ -1,5 +1,3 @@
-use futures::{future::BoxFuture, FutureExt};
-
 use crate::par::external::ExternalFnRet;
 use std::sync::{mpsc, Arc};
 

@@ -18,7 +18,7 @@ use crate::{
         program::{CheckedModule, Definition},
         types::{visit, Type, TypeDefs, TypeError},
     },
-    runtime::poll::poll_token_server,
+    runtime::{flat::runtime::GlobalValue, poll::poll_token_server},
 };
 
 use super::{
@@ -51,7 +51,8 @@ macro_rules! tdb {
 pub enum Var {
     Name(LocalName),
     Loop(Option<LocalName>),
-    Poll(LocalName),
+    PollDriver(LocalName),
+    PollRunner(LocalName),
 }
 
 #[derive(Clone, Debug)]
@@ -102,6 +103,7 @@ pub struct PackageState {
     tab_level: usize,
     redexes: Vec<(Index<Global>, Index<Global>)>,
     loop_points: IndexMap<Option<LocalName>, PackData>,
+    poll_points: IndexMap<LocalName, PackData>,
 }
 
 impl Default for PackageState {
@@ -113,6 +115,7 @@ impl Default for PackageState {
             tab_level: usize::default(),
             redexes: Vec::default(),
             loop_points: Default::default(),
+            poll_points: Default::default(),
         }
     }
 }
@@ -123,7 +126,8 @@ impl Display for Context {
             match k {
                 Var::Loop(None) => write!(f, "@ = {v:?}"),
                 Var::Loop(Some(k)) => write!(f, "@{k} = {v:?}"),
-                Var::Poll(k) => write!(f, "@{k} = {v:?}"),
+                Var::PollDriver(k) => write!(f, "@{k} = {v:?}"),
+                Var::PollRunner(k) => write!(f, "@{k} = {v:?}"),
                 Var::Name(k) => write!(f, "{k} = {v:?}"),
             }?;
         }
@@ -173,6 +177,8 @@ impl PackageState {
             ))
         }
     }
+    /// Capture all loop and poll variables,
+    /// and also all named variables that are in `captures`
     fn capture(&mut self, captures: &Captures) -> Result<Context> {
         let mut target = Context::default();
         for (k, mut v) in core::mem::take(&mut self.context.vars) {
@@ -367,8 +373,14 @@ impl Compiler {
             .last_mut()
             .map(|x| x.loop_points.clone())
             .unwrap_or_default();
+        let polls = self
+            .current
+            .last_mut()
+            .map(|x| x.poll_points.clone())
+            .unwrap_or_default();
         self.current.push(PackageState::default());
         self.current().loop_points = loops;
+        self.current().poll_points = polls;
         self.current().num_vars = num_vars;
         self.current().tab_level = tab_level;
     }
@@ -421,6 +433,55 @@ impl Compiler {
         let captures = self.alloc(Global::Value(Value::Break));
         let global = Global::Package(package, captures, FanBehavior::Expand);
         global
+    }
+    fn in_package_inline(
+        &mut self,
+        num_vars: usize,
+        pack: &PackData,
+        f: impl FnOnce(&mut Self) -> Result<Global>,
+    ) -> Result<Package> {
+        self.push_current(num_vars);
+
+        let (c0, c1) = self.current().new_var();
+        self.current().unpack_self(c0, &pack);
+        let root = f(self)?;
+        let current = self.pop_current();
+        Ok(self.finalize_package(current, root, c1, num_vars, format!("case branch")))
+    }
+    fn in_package(
+        &mut self,
+        pack: &PackData,
+        f: impl FnOnce(&mut Self, Global) -> Result<(Global, Global)>,
+    ) -> Result<(PackagePtr)> {
+        self.push_current(0);
+        let (captures_inner, cx) = self.current().new_var();
+        self.current().unpack_self(cx, &pack);
+
+        let (root, captures) = f(self, captures_inner)?;
+
+        let package = self.pop_current();
+
+        let package =
+            self.finalize_package(package, root, captures, 0, format!("begin body at ..."));
+
+        let package_place = self.write_arena().alloc_in_new(None);
+        assert!(self
+            .write_arena()
+            .get_mut(package_place)
+            .replace(package)
+            .is_none());
+        Ok(package_place)
+    }
+    fn in_package_with_captures(
+        &mut self,
+        pack: &PackData,
+        f: impl FnOnce(&mut Self) -> Result<Global>,
+    ) -> Result<(PackagePtr)> {
+        self.in_package(pack, |self_, captures| {
+            let root = f(self_)?;
+            let root = Global::Destruct(GlobalCont::Par(self_.alloc(captures), self_.alloc(root)));
+            Ok((root, Global::Destruct(GlobalCont::Continue)))
+        })
     }
     fn compile_command(
         &mut self,
@@ -482,50 +543,26 @@ impl Compiler {
                     // TODO; this uses a different set of vars for each branch
                     // but this is not necessary
                     // and leads to increased compilation times
-                    self.push_current(base_num_vars);
+
                     let name_old = name;
                     let name = self.intern(name.string.as_str());
 
-                    let (c0, c1) = self.current().new_var();
-                    self.current().unpack_self(c0, &pack_data);
-                    let root = self.current().define_var(Var::Name(subject.clone()));
-
-                    self.enter();
-                    self.compile_process(span, proc)?;
-                    self.exit();
-                    let current = self.pop_current();
-                    let package = self.finalize_package(
-                        current,
-                        root,
-                        c1,
-                        base_num_vars,
-                        format!("case branch {name_old} at {span}"),
-                    );
+                    let package = self.in_package_inline(base_num_vars, &pack_data, |self_| {
+                        let root = self_.current().define_var(Var::Name(subject.clone()));
+                        self_.compile_process(span, proc)?;
+                        Ok(root)
+                    })?;
                     branches.push((name, package.body));
                     max_num_vars = max_num_vars.max(package.num_vars);
-                    //self.pop_current();
                 }
                 if let Some(else_branch) = else_branch {
-                    tdb!(self.current().tab_level, "else branch");
-                    self.push_current(base_num_vars);
-                    self.current().num_vars = base_num_vars;
                     let name = self.empty_string();
 
-                    let (c0, c1) = self.current().new_var();
-                    self.current().unpack_self(c0, &pack_data);
-                    let root = self.current().define_var(Var::Name(subject.clone()));
-                    self.enter();
-                    self.compile_process(span, &else_branch)?;
-                    self.exit();
-
-                    let current = self.pop_current();
-                    let package = self.finalize_package(
-                        current,
-                        root,
-                        c1,
-                        base_num_vars,
-                        format!("else branch at {span}"),
-                    );
+                    let package = self.in_package_inline(base_num_vars, &pack_data, |self_| {
+                        let root = self_.current().define_var(Var::Name(subject.clone()));
+                        self_.compile_process(span, &else_branch)?;
+                        Ok(root)
+                    })?;
                     branches.push((name, package.body));
                     max_num_vars = max_num_vars.max(package.num_vars);
                     //self.pop_current();
@@ -562,37 +599,18 @@ impl Compiler {
                     .get_var(&Var::Name(subject.clone()), &VariableUsage::Move)?;
                 let loop_var = self.current().define_var(Var::Loop(label.clone()));
 
-                let package_place = self.write_arena().alloc_in_new(None);
                 let context = self.current().capture(&captures)?;
                 let (captures, pack) = self.current().pack(context);
-                self.current()
-                    .loop_points
-                    .insert(label.clone(), pack.clone());
 
-                self.push_current(0);
-                let (captures_inner, cx) = self.current().new_var();
-                self.current().unpack_self(cx, &pack);
-                let root_inner = self.current().define_var(Var::Name(subject.clone()));
-                self.exit();
-                self.compile_process(span, body)?;
-                self.enter();
-                let root_inner = Global::Destruct(GlobalCont::Par(
-                    self.alloc(captures_inner),
-                    self.alloc(root_inner),
-                ));
-                let package = self.pop_current();
-                let package = self.finalize_package(
-                    package,
-                    root_inner,
-                    Global::Destruct(GlobalCont::Continue),
-                    0,
-                    format!("begin body at {span}"),
-                );
-                assert!(self
-                    .write_arena()
-                    .get_mut(package_place)
-                    .replace(package)
-                    .is_none());
+                let package_place = self.in_package_with_captures(&pack, |self_| {
+                    let root_inner = self_.current().define_var(Var::Name(subject.clone()));
+                    self_
+                        .current()
+                        .loop_points
+                        .insert(label.clone(), pack.clone());
+                    self_.compile_process(span, body)?;
+                    Ok(root_inner)
+                })?;
 
                 let captures = self.alloc(captures);
                 let driver = self.alloc(driver);
@@ -647,6 +665,55 @@ impl Compiler {
         }
         Ok(())
     }
+    fn poll_submit_clients(
+        &mut self,
+        span: &Span,
+        clients: &[Arc<Expression<Type>>],
+        poll_var: &Var,
+    ) -> Result<()> {
+        // Queue clients objects.
+        if !clients.is_empty() {
+            let clients: Result<Vec<_>> = clients
+                .iter()
+                .map(|client| self.compile_expression(span, client))
+                .collect();
+            let stream = self.current().build_submit_stream(clients?);
+            let (next0, next1) = self.current().new_var();
+            let payload = Global::Value(Value::Pair(self.alloc(next0), self.alloc(stream)));
+            let request = Global::Value(Value::Either(
+                self.alloc_clone("#submit"),
+                self.alloc(payload),
+            ));
+            let token = self.current().get_var(&poll_var, &VariableUsage::Move)?;
+            self.current().link(token, request);
+            self.current().define_var_known(poll_var.clone(), next1);
+        }
+        Ok(())
+    }
+    fn submit_clients(
+        &mut self,
+        span: &Span,
+        poll_var: &Var,
+        clients: &[Arc<Expression<Type>>],
+    ) -> Result<()> {
+        if !clients.is_empty() {
+            let clients: Result<Vec<_>> = clients
+                .into_iter()
+                .map(|client| self.compile_expression(span, client))
+                .collect();
+            let stream = self.current().build_submit_stream(clients?);
+            let (next0, next1) = self.current().new_var();
+            let payload = Global::Value(Value::Pair(self.alloc(next0), self.alloc(stream)));
+            let request = Global::Value(Value::Either(
+                self.alloc_clone("#submit"),
+                self.alloc(payload),
+            ));
+            let token = self.current().get_var(&poll_var, &VariableUsage::Move)?;
+            self.current().link(token, request);
+            self.current().define_var_known(poll_var.clone(), next1);
+        }
+        Ok(())
+    }
     fn compile_process(&mut self, span: &Span, proc: &Process<Type>) -> Result<()> {
         match proc {
             Process::Let {
@@ -695,6 +762,15 @@ impl Compiler {
                     .clone();
                 self.compile_process(span, &body)?;
             }
+            // Poll / Submit
+            // There's an external that's created on poll processes,
+            // which processes commands
+            // it can either get sent a poll command which is like
+            // popping a client that is ready from the pool
+            // or a submit command which pushes clients
+            //
+            // the clients are handled by the result slot
+            // in the poll command, which contains the poll body code.
             Process::Poll {
                 span,
                 kind,
@@ -707,36 +783,96 @@ impl Compiler {
                 then,
                 else_,
             } => {
-                let poll_var = Var::Poll(driver.clone());
+                let poll_var = Var::PollDriver(driver.clone());
+                // Initialize the poll token (only for `poll`, not `repoll`).
                 if matches!(kind, PollKind::Poll) {
                     self.current()
                         .define_var_known(poll_var.clone(), poll_token_tree());
                 }
 
-                if !clients.is_empty() {
-                    let clients: Result<Vec<_>> = clients
-                        .into_iter()
-                        .map(|client| self.compile_expression(span, client))
-                        .collect();
-                    let stream = self.current().build_submit_stream(clients?);
-                    let (next0, next1) = self.current().new_var();
-                    let payload = Global::Value(Value::Pair(self.alloc(next0), self.alloc(stream)));
-                    let request = Global::Value(Value::Either(
-                        self.alloc_clone("#submit"),
-                        self.alloc(payload),
-                    ));
-                    let token = self.current().get_var(&poll_var, &VariableUsage::Move)?;
-                    self.current().link(token, request);
-                    self.current().define_var_known(poll_var.clone(), next1);
-                }
+                self.submit_clients(span, &poll_var, clients);
+
+                // Create a package that will wrap the poll body
+                let package_place = self.write_arena().alloc_in_new(None);
+                let mut captures = captures.clone();
+                let poll_runner = self.current().define_var(Var::PollRunner(driver.clone()));
+
+                let context = self.current().capture(&captures)?;
+                let (captures_wire, pack) = self.current().pack(context);
+                self.current()
+                    .poll_points
+                    .insert(point.clone(), pack.clone());
+
+                // Create the Poll package; which takes as an input the context
+                //
+                let package = self.in_package(&pack, |self_, cx| {
+                    let base_num_vars = self_.current().num_vars;
+                    let then_package = self_.in_package_inline(base_num_vars, &pack, |self_| {
+                        let root_inner = self_.current().define_var(Var::Name(name.clone()));
+                        self_.compile_process(span, then)?;
+                        Ok(root_inner)
+                    })?;
+                    let else_package = self_.in_package_inline(base_num_vars, &pack, |self_| {
+                        let root_inner = self_.current().define_var(Var::Name(name.clone()));
+                        self_.compile_process(span, else_)?;
+                        Ok(root_inner)
+                    })?;
+                    self_.current().num_vars = else_package.num_vars.max(then_package.num_vars);
+
+                    let (token_new0, token_new1) = self_.current().new_var();
+                    let token = self_.current().get_var(&poll_var, &VariableUsage::Move)?;
+                    self_
+                        .current()
+                        .define_var_known(poll_var.clone(), token_new0);
+
+                    let branches = [
+                        (self_.intern("#client"), then_package.body),
+                        (self_.intern("#empty"), else_package.body),
+                    ];
+                    let branches = self_.alloc_clone(branches.as_slice());
+
+                    let context = self_.current().capture(&captures)?;
+                    let context = self_.current().pack_with_shape(context, &pack);
+                    let context = self_.alloc(context);
+                    let body = {
+                        let a = Global::Value(Value::Pair(
+                            self_.alloc(Global::Destruct(GlobalCont::Choice(context, branches))),
+                            self_.alloc(token_new1),
+                        ));
+                        let a = Global::Value(Value::Either(
+                            self_.alloc_clone("#poll"),
+                            self_.alloc(a),
+                        ));
+                        a
+                    };
+                    self_.current().link(token, body);
+
+                    Ok((cx, Global::Destruct(GlobalCont::Continue)))
+                })?;
+                let package_cx = self.alloc(Global::Value(GlobalValue::Break));
+                let package_node = Global::Package(package, package_cx, FanBehavior::Expand);
+                self.current().link(package_node.clone(), poll_runner);
+                self.current().link(package_node.clone(), captures_wire);
             }
+            // When we submit, we need to submit a list of clients and repoll
             Process::Submit {
                 span,
                 driver,
                 point,
-                values,
+                values: clients,
                 captures,
-            } => {}
+            } => {
+                let poll_driver = Var::PollDriver(driver.clone());
+                let poll_runner = Var::PollDriver(driver.clone());
+
+                self.submit_clients(span, &poll_driver, clients);
+
+                let shape = self.current().poll_points.get(point).unwrap().clone();
+                let runner = self.current().get_var(&poll_runner, &VariableUsage::Copy)?;
+                let context = self.current().capture(&captures)?;
+                let captures = self.current().pack_with_shape(context, &shape);
+                self.current().link(runner, captures);
+            }
             Process::Unreachable(span) => todo!(),
             _ => todo!(),
         };
