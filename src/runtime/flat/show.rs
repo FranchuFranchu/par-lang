@@ -52,7 +52,7 @@ impl<'a, 'b, A: ArenaLike> std::fmt::Display for Showable<'a, 'b, &'a Linear, A>
             Linear::Value(value) => {
                 write!(f, "{}", Showable(value, self.1))?;
             }
-            Linear::Request(_sender) => {
+            Linear::Request(source, _sender) => {
                 write!(f, "<external request>")?;
             }
             Linear::ShareHole(mutex) => {

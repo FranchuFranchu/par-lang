@@ -12,6 +12,7 @@ pub(crate) async fn poll_token_server(mut handle: Handle) {
 
     loop {
         let op = handle.case().await;
+        println!("{:?}", op.as_str());
         match op.as_str() {
             "#poll" => {
                 // payload: (result_slot) next_slot
@@ -24,6 +25,7 @@ pub(crate) async fn poll_token_server(mut handle: Handle) {
                     continue;
                 }
 
+                println!("Get next client;");
                 let client = clients
                     .next()
                     .await

@@ -1,0 +1,54 @@
+
+dec FanIn : [type a] [List<List<a>>] List<a>
+def FanIn = [type a] [lists] chan yield {
+  let yield = Cell.Share(yield, chan cell {
+    lists.begin.case {
+      .end! => {
+        cell.end!
+      }
+
+      .item(list) => {
+        cell.split(chan cell {
+          list.begin.case {
+            .end! => {
+              cell.end!
+            }
+
+            .item(value) => {
+              cell.take[yield]
+              yield.item(value)
+              cell.put(yield)
+              list.loop
+            }
+          }
+        })
+
+        lists.loop
+      }
+    }
+  })
+
+  yield.end!
+}
+
+def SumList: [List<Nat>] Nat = [list]
+  list.begin.case {
+    .end! => 0,
+    .item(x) xs => Nat.Add(x, xs.loop),
+  }
+
+def Test.FanIn: [Test] ! = chan user {
+    user[test]
+
+    let original = *(*(1), *(1, 2), *(1, 2, 3))
+    let sum = SumList(FanIn(type Nat)(original))
+
+    test.assert("Nondeterministic fan and sum of  *(*(1), *(1, 2), *(1, 2, 3)) is 10", Nat.Equals(sum, 10))
+    user!
+}
+
+def Main = chan user {
+    let original = *(*(1), *(1, 2), *(1, 2, 3))
+    let sum = SumList(FanIn(type Nat)(original))
+    user!
+}

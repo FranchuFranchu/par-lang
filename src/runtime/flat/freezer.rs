@@ -45,14 +45,10 @@ impl<'a> Freezer<'a> {
         value: &Value<P>,
         mut leaves: impl FnMut(&mut Self, &TripleArena, &P) -> Global,
     ) -> Global {
-        let value = value
-            .map_ref_leaves(|p| {
-                Some({
-                    let p = leaves(self, read, p);
-                    self.write.alloc(p)
-                })
-            })
-            .unwrap();
+        let value = value.map_leaves_ref(|p| {
+            let p = leaves(self, read, p);
+            self.write.alloc(p)
+        });
         Global::Value(value)
     }
     fn freeze_shared(&mut self, read: &TripleArena, node: &Shared) -> Global {
@@ -74,31 +70,21 @@ impl<'a> Freezer<'a> {
                     let global = self.write.alloc(global);
                     Global::Package(package, global, FanBehavior::Propagate)
                 }
-                SyncShared::Value(value) => Global::Value(
-                    value
-                        .map_ref_leaves(|shared| {
-                            let global = self.freeze_shared(read, shared);
-                            let global = self.write.alloc(global);
-                            Some(global)
-                        })
-                        .unwrap(),
-                ),
+                SyncShared::Value(value) => Global::Value(value.map_leaves_ref(|shared| {
+                    let global = self.freeze_shared(read, shared);
+                    let global = self.write.alloc(global);
+                    global
+                })),
             },
         }
     }
     fn freeze_linear(&mut self, read: &TripleArena, node: &Linear) -> Global {
         match node {
-            Linear::Value(value) => Global::Value(
-                value
-                    .map_ref_leaves(|node| {
-                        Some({
-                            let n = self.freeze_node(read, node);
-                            self.write.alloc(n)
-                        })
-                    })
-                    .unwrap(),
-            ),
-            Linear::Request(_) => panic!("attempted to freeze `Linear::Request`"),
+            Linear::Value(value) => Global::Value(value.map_leaves_ref(|node| {
+                let n = self.freeze_node(read, node);
+                self.write.alloc(n)
+            })),
+            Linear::Request(s, _) => panic!("attempted to freeze `Linear::Request` from {s:?}"),
             Linear::ShareHole(mutex) => {
                 let empty_index = self.write.alloc_clone::<[Global]>(&[]);
                 let mut lock = mutex.lock().unwrap();

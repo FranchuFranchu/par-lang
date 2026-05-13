@@ -80,10 +80,10 @@ impl Reducer {
                     let start = Instant::now();
                     if let Some((a, b)) = self.runtime.reduce() {
                         match (a, b) {
-                            (UserData::Request(a), b) => {
+                            (UserData::Request(_, a), b) => {
                                 a.send(b).unwrap();
                             }
-                            (a, Node::Linear(Linear::Request(b))) => {
+                            (a, Node::Linear(Linear::Request(_, b))) => {
                                 b.send(Node::Linear(a.into())).unwrap();
                             }
                             (UserData::ExternalFn(f), other) => {

@@ -112,7 +112,7 @@ impl Playground {
             element: None,
             cursor_pos: (0, 0),
             theme_mode: ThemeMode::System,
-            rt: tokio::runtime::Builder::new_multi_thread()
+            rt: tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
                 .expect("Failed to create Tokio runtime"),

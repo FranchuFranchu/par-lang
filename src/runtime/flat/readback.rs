@@ -30,7 +30,10 @@ impl HandleNode {
     fn linked_pair() -> (Node, Self) {
         let (tx, rx) = oneshot::channel();
 
-        (Node::Linear(Linear::Request(tx)), HandleNode::Waiting(rx))
+        (
+            Node::Linear(Linear::new_request(tx)),
+            HandleNode::Waiting(rx),
+        )
     }
 
     async fn take(&mut self) -> Node {
@@ -168,6 +171,7 @@ impl Handle {
         self.new(right_h)
     }
 
+    /// Receive data. The `second` member of the internal `Value::Pair` is what is returned.
     pub fn receive(&mut self) -> Self {
         let (left, left_h) = HandleNode::linked_pair();
         let (right, right_h) = HandleNode::linked_pair();
@@ -258,11 +262,14 @@ impl Handle {
         self.new(Node::Shared(shared).into())
     }
 
+    /// Re-connect a request to ourselves to the node we're matching to
+    /// Use this carefully, as it can lead to infinite loops.
+    /// Only use if you know that the other side knows how to handle a Linear::Request
     async fn retry(&mut self) {
         let (tx, rx) = oneshot::channel::<Node>();
         let mut old_node = core::mem::replace(&mut self.node, rx.into());
         let old_node = old_node.take().await;
-        self.link(old_node, Node::Linear(Linear::Request(tx)));
+        self.link(old_node, Node::Linear(Linear::new_request(tx)));
     }
 
     async fn try_destruct(&mut self) -> Value<Node> {

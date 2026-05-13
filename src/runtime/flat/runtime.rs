@@ -47,7 +47,7 @@ type Str = Index<str>;
 #[derive(Debug)]
 pub(crate) struct InstanceInner(pub(crate) Mutex<Box<[Option<Node>]>>);
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 /// An `Instance` stores the state associated to an instance of a Global node.
 ///
 /// Instances can be cheaply cloned shallowly because they are reference counter; this creates another instance pointing to the same underyling
@@ -88,6 +88,29 @@ impl Instance {
     }
 }
 
+impl Debug for Instance {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Instance(")?;
+        if let Ok(instance) = self.vars.0.try_lock() {
+            let mut is_first = true;
+            for (idx, i) in instance.iter().enumerate() {
+                if let Some(i) = i {
+                    if !is_first {
+                        is_first = false;
+                        f.write_str(", ")?
+                    }
+                    f.write_fmt(format_args!("{idx} = {i:?}"))?;
+                }
+            }
+            f.write_str(")")?;
+            Ok(())
+        } else {
+            f.write_str(" <locked> )")?;
+            Ok(())
+        }
+    }
+}
+
 impl Drop for InstanceInner {
     fn drop(&mut self) {
         // This is a debugging tool to detect leaks.
@@ -112,7 +135,7 @@ pub enum UserData {
     /// An external function with shared captured. This is created externally
     ExternalArc(ExternalArc),
     /// A one-timer request for a value. The value it interacts with will be send through the sender.
-    Request(oneshot::Sender<Node>),
+    Request(String, oneshot::Sender<Node>),
 }
 
 #[derive(Clone)]
@@ -248,8 +271,31 @@ pub enum Value<P> {
 }
 
 impl<P> Value<P> {
-    pub fn map_leaves<Q>(self, mut f: impl FnMut(P) -> Option<Q>) -> Option<Value<Q>> {
-        Some(match self {
+    pub fn map_leaves<Q>(self, mut f: impl FnMut(P) -> Q) -> Value<Q> {
+        match self {
+            Value::Break => Value::Break,
+            Value::Pair(a, b) => Value::Pair(f(a), f(b)),
+            Value::Either(s, v) => Value::Either(s, f(v)),
+            Value::ExternalFn(e) => Value::ExternalFn(e),
+            Value::ExternalArc(e) => Value::ExternalArc(e),
+            Value::Primitive(primitive) => Value::Primitive(primitive),
+        }
+    }
+    pub fn map_leaves_ref<Q>(&self, mut f: impl FnMut(&P) -> Q) -> Value<Q> {
+        match self {
+            Value::Break => Value::Break,
+            Value::Pair(a, b) => Value::Pair(f(a), f(b)),
+            Value::Either(s, v) => Value::Either(*s, f(v)),
+            Value::ExternalFn(e) => Value::ExternalFn(*e),
+            Value::ExternalArc(e) => Value::ExternalArc(e.clone()),
+            Value::Primitive(primitive) => Value::Primitive(primitive.clone()),
+        }
+    }
+    pub fn map_leaves_result<Q, E>(
+        self,
+        mut f: impl FnMut(P) -> Result<Q, E>,
+    ) -> Result<Value<Q>, E> {
+        Ok(match self {
             Value::Break => Value::Break,
             Value::Pair(a, b) => Value::Pair(f(a)?, f(b)?),
             Value::Either(s, v) => Value::Either(s, f(v)?),
@@ -259,8 +305,11 @@ impl<P> Value<P> {
         })
     }
 
-    pub fn map_ref_leaves<Q>(&self, mut f: impl FnMut(&P) -> Option<Q>) -> Option<Value<Q>> {
-        Some(match self {
+    pub fn map_leaves_result_ref<Q, E>(
+        &self,
+        mut f: impl FnMut(&P) -> Result<Q, E>,
+    ) -> Result<Value<Q>, E> {
+        Ok(match self {
             Value::Break => Value::Break,
             Value::Pair(a, b) => Value::Pair(f(a)?, f(b)?),
             Value::Either(s, v) => Value::Either(*s, f(v)?),
@@ -278,7 +327,6 @@ pub enum SyncShared {
 }
 
 pub type GlobalValue = Value<GlobalPtr>;
-#[derive(Debug)]
 /// Linear nodes are not stored in the global arena; instead, they
 /// are created by the runtime and by the external dynamically, as needed
 pub enum Linear {
@@ -287,7 +335,7 @@ pub enum Linear {
     /// tasks. Whatever node it interacts with will get sent to `Node`
     /// This is not true for variable, package, or fanout nodes, which
     /// are of a higher priority than Request nodes.
-    Request(oneshot::Sender<Node>),
+    Request(String, oneshot::Sender<Node>),
     /// This variant is created on `Fanout` ~ `Variable` interactions
     /// and is substituted into the variable's slot
     /// It is a "hole" that will get filled with whatever
@@ -299,12 +347,29 @@ pub enum Linear {
     ShareHole(Arc<Mutex<SharedHole>>),
 }
 
+impl Linear {
+    pub fn new_request(tx: oneshot::Sender<Node>) -> Self {
+        let source = format!("{}", std::backtrace::Backtrace::capture());
+        Self::Request(source, tx)
+    }
+}
+
+impl Debug for Linear {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Value(arg0) => f.debug_tuple("Value").field(arg0).finish(),
+            Self::Request(s, _) => f.write_fmt(format_args!("Request{{ {s} }}")),
+            Self::ShareHole(arg0) => f.debug_tuple("ShareHole").field(arg0).finish(),
+        }
+    }
+}
+
 impl From<UserData> for Linear {
     fn from(this: UserData) -> Linear {
         match this {
             UserData::ExternalFn(p) => Linear::Value((Value::ExternalFn(p))),
             UserData::ExternalArc(p) => Linear::Value((Value::ExternalArc(p))),
-            UserData::Request(p) => Linear::Request(p),
+            UserData::Request(s, p) => Linear::Request(s, p),
         }
     }
 }
@@ -339,28 +404,27 @@ pub trait Linker<A: ArenaLike> {
     fn link(&mut self, a: Node, b: Node);
     fn arena(&self) -> A;
 
-    fn show<'a, 'b>(&'b self, node: &'a Node) -> String {
+    fn show_node<'b>(&'b self, node: &Node) -> String {
+        let arena_ref = self.arena();
+        format!("{}", Showable(node, &mut Shower::from_arena(&arena_ref)))
+    }
+    fn show_global<'b>(&'b self, node: &Global) -> String {
         let arena_ref = self.arena();
         format!("{}", Showable(node, &mut Shower::from_arena(&arena_ref)))
     }
     fn destruct(&mut self, node: Node) -> Result<Value<Node>, Node> {
         match node {
-            Node::Linear(Linear::Value(v)) => Ok(v.map_leaves(|x| Some(*x)).unwrap()),
+            Node::Linear(Linear::Value(v)) => Ok(v.map_leaves(|x| *x)),
             Node::Shared(Shared::Sync(shared)) => match &*shared {
                 SyncShared::Package(package, shared) => {
                     let node =
                         self.instantiate_package_captures(*package, Node::Shared(shared.clone()));
                     self.destruct(node)
                 }
-                SyncShared::Value(shared) => Ok(shared
-                    .clone()
-                    .map_leaves(|x| Some(Node::Shared(x)))
-                    .unwrap()),
+                SyncShared::Value(shared) => Ok(shared.clone().map_leaves(|x| Node::Shared(x))),
             },
             Node::Global(instance, global_index) => match self.arena().get(global_index) {
-                Global::Value(v) => Ok(v
-                    .map_ref_leaves(|x| Some(Node::Global(instance.clone(), *x)))
-                    .unwrap()),
+                Global::Value(v) => Ok(v.map_leaves_ref(|x| Node::Global(instance.clone(), *x))),
                 _ => Err(Node::Global(instance, global_index)),
             },
             node => Err(node),
@@ -426,6 +490,7 @@ pub trait Linker<A: ArenaLike> {
 /// NodeRef is an internal structure to make matching on Nodes easier.
 /// It is like a Node but includes a reference to the Global in the Global branch
 /// to allow matching on it
+#[derive(Debug)]
 enum NodeRef<'a> {
     Linear(Linear),
     Shared(Shared),
@@ -474,6 +539,22 @@ impl<'a> NodeRef<'a> {
                 Some(ext.clone())
             }
             _ => None,
+        }
+    }
+    fn variant_name(&self) -> String {
+        match self {
+            NodeRef::Linear(l) => format!("Linear.{}", l.variant_name()),
+            NodeRef::Shared(s) => format!("Shared.{}", s.variant_name()),
+            /*Node::Global(i, g) => {
+                format!("Global@{:x}.{}", i.identifier(), g.variant_name())
+            }*/
+            NodeRef::Global(i, _, g) => {
+                format!(
+                    "Global@{:x}.{}",
+                    (i.identifier() >> 3) & 0xFF,
+                    g.variant_name()
+                )
+            }
         }
     }
 }
@@ -538,7 +619,7 @@ impl<A: ArenaLike> Runtime<A> {
     pub fn status(&self) {
         println!("Runtime status");
         for (a, b) in &self.redexes {
-            println!("  {} ~ {}", self.show(&a), self.show(&b));
+            println!("  {} ~ {}", self.show_node(&a), self.show_node(&b));
         }
     }
     /// Reduce all redexes in the net until a redex requires external action.
@@ -560,16 +641,16 @@ impl<A: ArenaLike> Runtime<A> {
     /// Recusrively turn a node into a `Shared` node which allows duplication
     /// This is done whenever a node needs to be duplicated. This function may return None if the node can't be duplicated.
     /// This is the case for linear nodes and negative types.
-    fn share(&mut self, node: Node) -> Option<Shared> {
+    fn share(&mut self, node: Node) -> Result<Shared, Node> {
         self.share_inner(node)
     }
-    fn share_inner(&mut self, node: Node) -> Option<Shared> {
+    fn share_inner(&mut self, node: Node) -> Result<Shared, Node> {
         stacker::maybe_grow(32 * 1024, 1024 * 1024, move || match node {
-            Node::Shared(shared) => Some(shared),
+            Node::Shared(shared) => Ok(shared),
             Node::Global(instance, global_index) => match self.arena().get(global_index) {
                 Global::Indirect(index) => self.share_inner(Node::Global(instance, *index)),
-                Global::Destruct(..) => None,
-                Global::Fanout(..) => None,
+                g @ Global::Destruct(..) => Err(Node::Global(instance, global_index)),
+                g @ Global::Fanout(..) => Err(Node::Global(instance, global_index)),
                 Global::Package(package, captures, FanBehavior::Expand) => {
                     let root = self.instantiate_package_captures(
                         package.clone(),
@@ -580,14 +661,14 @@ impl<A: ArenaLike> Runtime<A> {
                 Global::Package(package, captures, FanBehavior::Propagate) => {
                     self.rewrites.share_sync += 1;
                     let captures = self.share_inner(Node::Global(instance, *captures))?;
-                    Some(Shared::Sync(Arc::new(SyncShared::Package(
+                    Ok(Shared::Sync(Arc::new(SyncShared::Package(
                         *package, captures,
                     ))))
                 }
                 Global::Value(value) => {
                     self.rewrites.share_sync += 1;
-                    Some(Shared::Sync(Arc::new(SyncShared::Value(
-                        value.map_ref_leaves(|p| {
+                    Ok(Shared::Sync(Arc::new(SyncShared::Value(
+                        value.map_leaves_result_ref(|p| {
                             self.share_inner(Node::Global(instance.clone(), *p))
                         })?,
                     ))))
@@ -598,28 +679,28 @@ impl<A: ArenaLike> Runtime<A> {
                     if let Some(slot) = slot.take() {
                         drop(lock);
                         self.rewrites.share_sync += 1;
-                        Some(self.share_inner(slot)?)
+                        Ok(self.share_inner(slot)?)
                     } else {
                         self.rewrites.share_async += 1;
                         let (hole, shared) = self.create_share_hole();
                         slot.replace(hole);
-                        Some(shared)
+                        Ok(shared)
                     }
                 }
             },
             Node::Linear(Linear::Value(value)) => {
                 self.rewrites.share_sync += 1;
-                Some(Shared::Sync(Arc::new(SyncShared::Value(
-                    value.map_leaves(|p| self.share_inner(*p))?,
+                Ok(Shared::Sync(Arc::new(SyncShared::Value(
+                    value.map_leaves_result(|p| self.share_inner(*p))?,
                 ))))
             }
-            Node::Linear(Linear::Request(h)) => {
+            Node::Linear(Linear::Request(_, h)) => {
                 self.rewrites.share_async += 1;
                 let (hole, shared) = self.create_share_hole();
                 h.send(hole).unwrap();
-                Some(shared)
+                Ok(shared)
             }
-            Node::Linear(Linear::ShareHole(..)) => None,
+            n @ Node::Linear(Linear::ShareHole(..)) => Err(n),
         })
     }
 
@@ -647,7 +728,19 @@ impl<A: ArenaLike> Runtime<A> {
     // Interact-related methods
     fn interact_fanout(&mut self, instance: Instance, destinations: Index<[Global]>, other: Node) {
         self.rewrites.fanout += 1;
-        let other = self.share(other).unwrap();
+        let other = self.share(other).unwrap_or_else(|f| {
+            eprintln!(
+                "Attempted to fanout a linear node type: {}",
+                self.show_node(&f)
+            );
+            for i in destinations {
+                eprintln!(
+                    "Attempted to fanout a linear node type: {}",
+                    self.show_global(self.arena.get(i))
+                );
+            }
+            panic!();
+        });
         for dest in destinations {
             self.redexes.push((
                 Node::Global(instance.clone(), dest.clone()),
@@ -785,9 +878,9 @@ impl<A: ArenaLike> Runtime<A> {
                 );
             }
 
-            sym!(NodeRef::Linear(Linear::Request(request)), other) => {
+            sym!(NodeRef::Linear(Linear::Request(source, request)), other) => {
                 self.rewrites.ext_send += 1;
-                return Some((UserData::Request(request), other.into_node()));
+                return Some((UserData::Request(source, request), other.into_node()));
             }
             sym!(node, other) if node.as_external_fn().is_some() => {
                 let Some(ext) = node.as_external_fn() else {
@@ -907,7 +1000,7 @@ impl Linear {
     pub fn variant_name(&self) -> String {
         match self {
             Linear::Value(v) => format!("Value({})", v.variant_name()),
-            Linear::Request(_) => "Request".to_owned(),
+            Linear::Request(source, _) => "Request".to_owned(),
             Linear::ShareHole(_) => "ShareHole".to_owned(),
         }
     }
